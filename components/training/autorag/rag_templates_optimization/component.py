@@ -87,6 +87,7 @@ def rag_templates_optimization(
         pass
 
     from ai4rag import handler
+    from ai4rag.assets_generator import build_leaderboard_html, generate_notebook_from_template
     from ai4rag.core.experiment.experiment import AI4RAGExperiment
     from ai4rag.core.hpo.gam_opt import GAMOptSettings
     from ai4rag.evaluator import BaseEvaluator, RagasEvaluator, UnitxtEvaluator
@@ -97,7 +98,6 @@ def rag_templates_optimization(
     from ai4rag.search_space.prepare.models import get_embedding_models, get_foundation_models
     from ai4rag.search_space.src.parameter import Parameter
     from ai4rag.search_space.src.search_space import AI4RAGSearchSpace
-    from ai4rag.utils.assets_generator import build_leaderboard_html, generate_notebook_from_template
     from ai4rag.utils.clients.maas_client import create_maas_client
     from ai4rag.utils.docling_io import load_docling_documents
     from ai4rag.utils.event_handler import KFPEventHandler
