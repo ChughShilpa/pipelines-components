@@ -1,12 +1,21 @@
 """Unit tests for the dataset_download component."""
 
 import inspect
+import json
 import textwrap
 from unittest import mock
 
 import pytest
 
 from ..component import dataset_download
+
+
+class _MockArtifact:
+    """Mock KFP artifact with a writable path."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.metadata = {}
 
 
 def _extract_validation_functions():
@@ -375,6 +384,15 @@ class TestToolCallValidation:
         parse_pos = source.index("parse_uri(dataset_uri)")
         assert guard_pos < parse_pos, "dataset_format validation must happen before download"
 
+        with pytest.raises(ValueError, match="Unsupported dataset_format"):
+            dataset_download.python_func(
+                train_dataset=mock.MagicMock(),
+                eval_dataset=mock.MagicMock(),
+                dataset_uri="hf://does-not-matter",
+                pvc_mount_path="/tmp",
+                dataset_format="toolcall",
+            )
+
     def test_has_tool_calls_helper(self):
         """_has_tool_calls_in_messages correctly detects tool_calls."""
         messages_with = [
@@ -410,63 +428,85 @@ class TestToolCallValidation:
         assert self._has_tool_calls(messages) is False
 
 
+def _multi_turn_row(question: str, call_id: str) -> dict:
+    """Build a multi-turn tool-call sample whose user message has no tool_calls key."""
+    return {
+        "messages": [
+            {"role": "user", "content": question},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "get_alerts", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "{}", "tool_call_id": call_id},
+        ],
+    }
+
+
 class TestToolCallJsonlRoundTrip:
     """Regression test: multi-turn tool-call data survives load → save round-trip."""
 
     def test_multiturn_messages_written_as_dicts(self, tmp_path):
-        """Messages must be dicts in output JSONL, not JSON-encoded strings."""
-        import json
-
-        from datasets import load_dataset
-
-        # Write a multi-turn tool-call JSONL input file
+        """python_func must write messages as dicts, not JSON-encoded strings."""
         input_path = tmp_path / "input.jsonl"
         rows = [
-            {
-                "messages": [
-                    {"role": "user", "content": "Check weather"},
-                    {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {"name": "get_alerts", "arguments": "{}"},
-                            }
-                        ],
-                    },
-                    {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
-                ],
-                "question": "Check weather",
-            }
+            _multi_turn_row("Check weather in CA", "call_1"),
+            _multi_turn_row("Check weather in NY", "call_2"),
         ]
-        input_path.write_text("\n".join(json.dumps(r) for r in rows))
+        input_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
-        # Load via datasets (same path as the component)
-        ds = load_dataset("json", data_files=str(input_path), split="train")
+        train_artifact = _MockArtifact(str(tmp_path / "train.jsonl"))
+        eval_artifact = _MockArtifact(str(tmp_path / "eval.jsonl"))
 
-        # Write using the same helper logic as the component
-        output_path = tmp_path / "output.jsonl"
-        with open(output_path, "w") as f:
-            for row in ds:
-                row = dict(row)
-                if "messages" in row and row["messages"]:
-                    row["messages"] = [
-                        {k: v for k, v in (json.loads(m) if isinstance(m, str) else m).items() if v is not None}
-                        for m in row["messages"]
-                    ]
-                f.write(json.dumps(row) + "\n")
+        dataset_download.python_func(
+            train_dataset=train_artifact,
+            eval_dataset=eval_artifact,
+            dataset_uri=str(input_path),
+            pvc_mount_path=str(tmp_path),
+            train_split_ratio=1.0,
+            subset_count=0,
+            dataset_format="tool_call",
+        )
 
-        # Read back and verify messages are dicts, not strings
-        with open(output_path) as f:
-            output_row = json.loads(f.readline())
+        with open(train_artifact.path) as f:
+            output_rows = [json.loads(line) for line in f if line.strip()]
 
-        for i, msg in enumerate(output_row["messages"]):
-            assert isinstance(msg, dict), f"messages[{i}] should be dict, got {type(msg).__name__}"
-            assert "role" in msg, f"messages[{i}] missing 'role'"
+        assert len(output_rows) == 2
+        for output_row in output_rows:
+            for i, msg in enumerate(output_row["messages"]):
+                assert isinstance(msg, dict), f"messages[{i}] should be dict, got {type(msg).__name__}"
+                assert "role" in msg, f"messages[{i}] missing 'role'"
 
-        # User message should NOT have tool_calls key (None stripped)
-        user_msg = output_row["messages"][0]
-        assert user_msg["role"] == "user"
-        assert "tool_calls" not in user_msg, "None-valued tool_calls should be stripped from user messages"
+            user_msg = output_row["messages"][0]
+            assert user_msg["role"] == "user"
+            assert "tool_calls" not in user_msg, "None-valued tool_calls should be stripped from user messages"
+
+    def test_both_formats_logs_tie_break(self, tmp_path):
+        """When a row matches both formats, log the single-turn tie-break."""
+        input_path = tmp_path / "input.jsonl"
+        row = {
+            "question": "Weather in CA?",
+            "target_tool_name": "get_alerts",
+            **_multi_turn_row("Weather in CA?", "call_1"),
+        }
+        input_path.write_text(json.dumps(row) + "\n")
+
+        dataset_download.python_func(
+            train_dataset=_MockArtifact(str(tmp_path / "train.jsonl")),
+            eval_dataset=_MockArtifact(str(tmp_path / "eval.jsonl")),
+            dataset_uri=str(input_path),
+            pvc_mount_path=str(tmp_path),
+            train_split_ratio=1.0,
+            subset_count=0,
+            dataset_format="tool_call",
+        )
+
+        log = (tmp_path / "pipeline_log.txt").read_text()
+        assert "matches both single-turn and multi-turn" in log
+        assert "using single-turn validation" in log

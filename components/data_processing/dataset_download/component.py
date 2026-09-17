@@ -182,6 +182,11 @@ def dataset_download(
                 f"Found keys: {list(first.keys())}"
             )
 
+        if is_single_turn and is_multi_turn:
+            log_message(
+                "Item 0 matches both single-turn and multi-turn tool-call formats; using single-turn validation"
+            )
+
         if is_single_turn:
             for i in range(num_to_check):
                 item = dataset[i]
