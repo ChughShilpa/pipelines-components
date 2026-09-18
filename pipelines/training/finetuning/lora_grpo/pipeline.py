@@ -64,7 +64,6 @@ def lora_grpo_pipeline(
     # Stage 1
     phase_01_dataset_opt_subset: int = 0,
     # Stage 2
-    phase_02_train_opt_data_path: str = "",
     phase_02_train_opt_data_config: str = "",
     phase_02_train_opt_n_train: int = 200,
     phase_02_train_opt_learning_rate: float = 1e-5,
@@ -166,11 +165,6 @@ def lora_grpo_pipeline(
         phase_01_dataset_opt_subset: Download and use only this many rows
             (random sample). Set to 0 for all rows. Use a small number for
             quick pipeline smoke-tests. Example: ``500``
-        phase_02_train_opt_data_path: When set, training loads data from this
-            HuggingFace ID or file path instead of the dataset downloaded in
-            stage 1. Leave empty to use the stage 1 dataset.
-            Example: ``Agent-Ark/Toucan-1.5M`` or
-            ``/mnt/pipeline/datasets/train.jsonl``
         phase_02_train_opt_data_config: HuggingFace dataset config (split or
             subset name). Only needed for multi-config datasets. For
             Agent-Ark/Toucan-1.5M set ``Qwen3``. Leave empty for single-config
@@ -268,7 +262,7 @@ def lora_grpo_pipeline(
         pvc_path=PVC_MOUNT_PATH,
         dataset=dataset_download_task.outputs["train_dataset"],
         training_base_model=phase_02_train_man_model,
-        training_data_path=phase_02_train_opt_data_path,
+        training_data_path="",
         training_num_iterations=phase_02_train_man_num_iterations,
         training_group_size=phase_02_train_man_group_size,
         training_prompt_batch_size=phase_02_train_man_prompt_batch_size,
