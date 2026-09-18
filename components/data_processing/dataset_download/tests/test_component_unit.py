@@ -44,8 +44,10 @@ def _extract_validation_functions():
                 func_source = textwrap.dedent("\n".join(current_lines))
                 functions[current_func] = func_source
 
-            if stripped.startswith("def _has_tool_calls_in_messages(") or stripped.startswith(
-                "def validate_tool_call_format_dataset("
+            if (
+                stripped.startswith("def _has_tool_calls_in_messages(")
+                or stripped.startswith("def _get_target_tool_value(")
+                or stripped.startswith("def validate_tool_call_format_dataset(")
             ):
                 current_func = stripped.split("(")[0].replace("def ", "")
                 current_lines = [line]
@@ -71,8 +73,17 @@ def _extract_validation_functions():
     # Compile and return the functions in a namespace
     from datasets import Dataset
 
-    namespace = {"log_message": lambda msg: None, "Dataset": Dataset}  # stub log_message
-    for name in ["_has_tool_calls_in_messages", "validate_chat_format_dataset", "validate_tool_call_format_dataset"]:
+    namespace = {
+        "log_message": lambda msg: None,  # stub log_message
+        "Dataset": Dataset,
+        "_TARGET_TOOL_FIELDS": ("target_tool_name", "target_tools"),
+    }
+    for name in [
+        "_has_tool_calls_in_messages",
+        "_get_target_tool_value",
+        "validate_chat_format_dataset",
+        "validate_tool_call_format_dataset",
+    ]:
         if name in functions:
             exec(functions[name], namespace)
 
@@ -256,7 +267,28 @@ class TestToolCallValidation:
                 {"question": "Weather in NY?", "target_tool_name": None},
             ]
         )
-        with pytest.raises(ValueError, match="Item 1: 'target_tool_name' is missing or empty"):
+        with pytest.raises(ValueError, match="Item 1: none of .* is present or non-empty"):
+            self.validate_tool_call(dataset)
+
+    def test_single_turn_target_tools_alias(self):
+        """Single-turn samples using plural 'target_tools' field also pass validation."""
+        dataset = _MockDataset(
+            [
+                {"question": "Research StellarPay", "target_tools": "company_research_exa, competitor_finder_exa"},
+                {"question": "Research AcmeCorp", "target_tools": "company_research_exa"},
+            ]
+        )
+        assert self.validate_tool_call(dataset) is True
+
+    def test_single_turn_missing_target_tools_alias(self):
+        """Single-turn sample missing both target_tool_name and target_tools raises ValueError."""
+        dataset = _MockDataset(
+            [
+                {"question": "Research StellarPay", "target_tools": "company_research_exa"},
+                {"question": "Research AcmeCorp", "target_tools": None},
+            ]
+        )
+        with pytest.raises(ValueError, match="Item 1: none of .* is present or non-empty"):
             self.validate_tool_call(dataset)
 
     def test_single_turn_missing_question(self):
@@ -352,7 +384,7 @@ class TestToolCallValidation:
                 },
             ]
         )
-        with pytest.raises(ValueError, match="'target_tool_name' is missing or empty"):
+        with pytest.raises(ValueError, match="none of .* is present or non-empty"):
             self.validate_tool_call(dataset)
 
     def test_unrecognized_format_raises(self):
