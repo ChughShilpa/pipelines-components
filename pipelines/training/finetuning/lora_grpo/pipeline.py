@@ -64,7 +64,7 @@ def lora_grpo_pipeline(
     # Stage 1
     phase_01_dataset_opt_subset: int = 0,
     # Stage 2
-    phase_02_train_opt_data_config: str = "",
+    phase_02_train_opt_data_config: str = "Qwen3",
     phase_02_train_opt_n_train: int = 200,
     phase_02_train_opt_learning_rate: float = 1e-5,
     phase_02_train_opt_gpu_memory_utilization: float = 0.45,
@@ -169,9 +169,11 @@ def lora_grpo_pipeline(
             (random sample). Set to 0 for all rows. Use a small number for
             quick pipeline smoke-tests. Example: ``500``
         phase_02_train_opt_data_config: HuggingFace dataset config (split or
-            subset name). Only needed for multi-config datasets. For
-            Agent-Ark/Toucan-1.5M set ``Qwen3``. Leave empty for single-config
-            datasets.
+            subset name). Only needed for multi-config datasets. Defaults to
+            ``Qwen3`` to match the default dataset
+            (``hf://Agent-Ark/Toucan-1.5M:Qwen3``). If you override
+            ``phase_01_dataset_man_data_uri`` with a single-config dataset,
+            set this to an empty string.
         phase_02_train_opt_n_train: Maximum rows ART draws from the dataset
             per run. Independent of ``phase_01_dataset_opt_subset``.
             Example: ``200`` for quick tests, ``2000`` for a fuller run.
