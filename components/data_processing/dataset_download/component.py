@@ -476,18 +476,27 @@ def dataset_download(
         def _write_jsonl(ds: Dataset, path: str):
             """Write dataset to JSONL, normalizing tool-call message fields.
 
-            When datasets>=4.8 loads non-uniform message schemas from JSONL,
-            Arrow may type each message as a JSON-encoded string instead of a
-            struct. This helper ensures messages are always written as dicts
-            and strips None-valued fields added by Arrow schema unification.
+            The 'messages' column can arrive in different shapes depending on
+            the source dataset's Arrow schema:
+            - A list of message dicts (already structured) - the common case.
+            - A list where individual messages are JSON-encoded strings
+              (datasets>=4.8 may type non-uniform message schemas this way).
+            - The entire messages column typed as a single JSON-encoded string
+              representing the whole array (e.g., some HF datasets store
+              complex nested fields as raw JSON strings).
+            This helper normalizes all of these to a list of dicts and strips
+            None-valued fields added by Arrow schema unification.
             """
             with open(path, "w") as f:
                 for row in ds:
                     row = dict(row)
                     if dataset_format == "tool_call" and "messages" in row and row["messages"]:
+                        messages = row["messages"]
+                        if isinstance(messages, str):
+                            messages = _json.loads(messages)
                         row["messages"] = [
                             {k: v for k, v in (_json.loads(m) if isinstance(m, str) else m).items() if v is not None}
-                            for m in row["messages"]
+                            for m in messages
                         ]
                     f.write(_json.dumps(row) + "\n")
 
