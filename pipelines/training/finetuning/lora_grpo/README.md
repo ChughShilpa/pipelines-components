@@ -17,20 +17,20 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | --------- | ---- | ------- | ----------- |
 | `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the user-provided ReadWriteMany PVC. Must exist before pipeline runs. Used for training output, evaluation, and model serving. |
 | `phase_01_dataset_man_data_uri` | `str` | `None` | Dataset URI (hf://, s3://, https://, pvc://). |
+| `phase_05_deploy_man_namespace` | `str` | `None` | Namespace for KServe deployment (required). |
 | `phase_01_dataset_man_data_split` | `float` | `1.0` | Train/eval split ratio. 1.0 = all for training (default for GRPO — rewards computed at rollout, not from an eval split). |
 | `phase_02_train_man_model` | `str` | `Qwen/Qwen3-4B` | Base model (HuggingFace ID or OCI path). |
 | `phase_02_train_man_num_iterations` | `int` | `5` | Number of GRPO training iterations. |
 | `phase_02_train_man_group_size` | `int` | `4` | Rollouts per prompt for advantage estimation. |
 | `phase_02_train_man_prompt_batch_size` | `int` | `50` | Prompts per training batch. |
 | `phase_02_train_man_lora_r` | `int` | `16` | LoRA rank (controls adapter capacity). |
-| `phase_02_train_man_lora_alpha` | `int` | `8` | LoRA scaling factor. |
+| `phase_02_train_man_lora_alpha` | `int` | `16` | LoRA scaling factor (typically >= lora_r). |
 | `phase_04_registry_man_address` | `str` | `""` | Model Registry address (empty = skip). |
 | `phase_04_registry_man_name` | `str` | `grpo-model` | Model name in registry. |
 | `phase_04_registry_man_version` | `str` | `1.0.0` | Semantic version (major.minor.patch). |
-| `phase_05_deploy_man_namespace` | `str` | `""` | Namespace for KServe deployment. |
 | `phase_01_dataset_opt_subset` | `int` | `0` | Limit dataset to N samples (0 = all). |
 | `phase_02_train_opt_data_path` | `str` | `""` | Override dataset path or HuggingFace ID (bypasses dataset artifact). |
-| `phase_02_train_opt_data_config` | `str` | `Qwen3` | HuggingFace dataset config name. |
+| `phase_02_train_opt_data_config` | `str` | `""` | HuggingFace dataset config name (empty = use dataset default; set explicitly for custom configs). |
 | `phase_02_train_opt_n_train` | `int` | `200` | Number of training samples from the dataset. |
 | `phase_02_train_opt_learning_rate` | `float` | `1e-05` | Learning rate (default 1e-5). |
 | `phase_02_train_opt_gpu_memory_utilization` | `float` | `0.45` | Fraction of GPU memory for vLLM rollout inference (rest for training). |
