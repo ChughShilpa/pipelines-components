@@ -1,11 +1,11 @@
 """LoRA GRPO (Group Relative Policy Optimization) Training Pipeline.
 
 A 5-stage pipeline for LoRA GRPO fine-tuning with promotion gating:
-1. Dataset Download — validates tool-call schema on CPU
-2. LoRA GRPO Training — ART backend, 1 GPU TrainJob, merges LoRA adapters
-3. GRPO Evaluation — extracts reward metrics, computes promotion gate
-4. Model Registry — registers promoted model (gated by promotion check)
-5. Model Deployment — deploys via KServe with vLLM (gated by promotion check)
+1. Dataset Download - validates tool-call schema on CPU
+2. LoRA GRPO Training - ART backend, 1 GPU TrainJob, merges LoRA adapters
+3. GRPO Evaluation - extracts reward metrics, computes promotion gate
+4. Model Registry - registers promoted model (gated by promotion check)
+5. Model Deployment - deploys via KServe with vLLM (gated by promotion check)
 
 Uses the Kubeflow Trainer with ART backend on a single GPU TrainJob.
 Requires a user-provided ReadWriteMany PVC for persistent model storage
@@ -38,14 +38,14 @@ PIPELINE_NAME = "lora-grpo-pipeline"
 )
 def lora_grpo_pipeline(
     # =========================================================================
-    # REQUIRED PARAMETERS (no defaults — must be supplied at run time)
+    # REQUIRED PARAMETERS (no defaults - must be supplied at run time)
     # =========================================================================
     phase_00_infra_man_pvc_name: str,
     phase_01_dataset_man_data_uri: str,
     phase_04_registry_man_address: str,
     phase_05_deploy_man_namespace: str,
     # =========================================================================
-    # KEY PARAMETERS — Sorted by stage
+    # KEY PARAMETERS - Sorted by stage
     # =========================================================================
     # Stage 1: Dataset
     phase_01_dataset_man_data_split: float = 1.0,
@@ -59,7 +59,7 @@ def lora_grpo_pipeline(
     phase_04_registry_man_name: str = "grpo-model",
     phase_04_registry_man_version: str = "1.0.0",
     # =========================================================================
-    # OPTIONAL PARAMETERS — Sorted by stage
+    # OPTIONAL PARAMETERS - Sorted by stage
     # =========================================================================
     # Stage 1
     phase_01_dataset_opt_subset: int = 0,
@@ -90,7 +90,7 @@ def lora_grpo_pipeline(
     phase_05_deploy_opt_cpu_requests: str = "2",
     phase_05_deploy_opt_memory_requests: str = "8Gi",
 ):
-    """LoRA GRPO Training Pipeline — RLVR fine-tuning with promotion gating.
+    """LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
     A 5-stage pipeline that trains a language model using LoRA GRPO
     (Group Relative Policy Optimization) for tool-calling tasks, evaluates
@@ -109,13 +109,13 @@ def lora_grpo_pipeline(
     Args:
         phase_00_infra_man_pvc_name: Name of the ReadWriteMany PVC used for
             training checkpoints and model serving. To create one: in RHOAI open
-            your Data Science Project → Cluster Storage → Create storage, select
+            your Data Science Project -> Cluster Storage -> Create storage, select
             ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name
             (not a path). Example: ``grpo-pipeline-pvc``
         phase_01_dataset_man_data_uri: URI of the dataset. Supported schemes:
             - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``
               Some datasets have multiple subsets (configs). If the dataset has
-              more than one config, you must append ``:config`` — otherwise
+              more than one config, you must append ``:config`` - otherwise
               ``load_dataset`` will fail asking you to choose. Single-config
               datasets do not need it.
               Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3``
@@ -124,12 +124,13 @@ def lora_grpo_pipeline(
               not an HTML page)
             - PVC file: ``pvc://path/to/file.jsonl``
         phase_05_deploy_man_namespace: OpenShift project where the KServe
-            InferenceService will be created. Must be a namespace with KServe
-            enabled — typically the same as your Data Science Project.
+            InferenceService will be created. Must be the same namespace where
+            your PVC is provisioned. Should have
+            KServe enabled - typically your Data Science Project.
             Example: ``my-ds-project``
         phase_01_dataset_man_data_split: Fraction of the dataset used for
             training (remainder becomes eval). Default 1.0 uses all rows, which
-            is correct for GRPO — improvement is measured from rollout rewards,
+            is correct for GRPO - improvement is measured from rollout rewards,
             not a held-out eval set.
         phase_02_train_man_model: HuggingFace model ID of the base model to
             fine-tune. If the model is gated, configure the ``hf-token`` secret.
@@ -137,15 +138,15 @@ def lora_grpo_pipeline(
         phase_02_train_man_num_iterations: Number of GRPO policy-gradient update
             steps. Each iteration generates ``group_size`` rollouts per prompt
             and updates the LoRA adapter. The promotion gate (stage 3) requires
-            ``final_reward > initial_reward`` — fewer than 30 iterations rarely
+            ``final_reward > initial_reward`` - fewer than 30 iterations rarely
             pass it. Default 50 runs in ~1-2 hours on one A100 80GB with
             Qwen3-4B. Use 100+ for a production-quality training run.
         phase_02_train_man_group_size: Rollouts generated per prompt to estimate
             relative reward advantage. Higher = better gradient signal but more
             memory and time. Default 4 is suitable for single-GPU runs.
         phase_02_train_man_prompt_batch_size: Prompts processed per GRPO update
-            step. Total rollout batch = ``prompt_batch_size × group_size``
-            (e.g., 50 × 4 = 200). Reduce if you hit out-of-memory errors.
+            step. Total rollout batch = ``prompt_batch_size x group_size``
+            (e.g., 50 x 4 = 200). Reduce if you hit out-of-memory errors.
             Example: ``50``
         phase_02_train_man_lora_r: LoRA adapter rank. Higher = more adapter
             capacity but slower training and more memory. Typical values: 8
@@ -153,10 +154,9 @@ def lora_grpo_pipeline(
         phase_02_train_man_lora_alpha: LoRA scaling factor. Effective weight
             scale = ``lora_alpha / lora_r``. Set equal to ``lora_r`` for neutral
             scaling (recommended). Example: ``16``
-        phase_04_registry_man_address: Hostname of your Model Registry service
-            (required). Find it in RHOAI under Model Registry → your registry
-            → connection details.
-            Example: ``model-registry-service.redhat-ods-applications.svc.cluster.local``
+        phase_04_registry_man_address: Hostname of the Model Registry service
+            (required). Find it in RHOAI Dashboard -> AI Hub -> Models ->
+            Registry -> click View Details and copy the Server URL.
         phase_04_registry_man_name: Name to register the model under. Must be
             unique within your Model Registry.
             Example: ``qwen3-grpo-tool-call``
@@ -188,7 +188,7 @@ def lora_grpo_pipeline(
         phase_02_train_opt_cpu: CPU cores requested for the TrainJob worker pod.
             Example: ``4``
         phase_02_train_opt_gpu: GPUs per TrainJob worker. ART requires exactly
-            1 GPU per worker — do not change this.
+            1 GPU per worker - do not change this.
         phase_02_train_opt_memory: RAM requested for the TrainJob worker pod.
             For Qwen3-4B on an 80GB GPU, 64Gi is sufficient.
             Example: ``64Gi``
@@ -335,7 +335,7 @@ def lora_grpo_pipeline(
     # (final_reward > initial_reward across iterations).
     # =========================================================================
     with dsl.If(
-        grpo_eval_task.outputs["promotion_passed"] == True,  # noqa: E712 — KFP dsl.If requires explicit == comparison
+        grpo_eval_task.outputs["promotion_passed"] == True,  # noqa: E712 - KFP dsl.If requires explicit == comparison
         name="promotion-gate",
     ):
         # Stage 4: Model Registry
