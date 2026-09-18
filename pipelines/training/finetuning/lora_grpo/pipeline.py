@@ -41,13 +41,13 @@ def lora_grpo_pipeline(
     # REQUIRED PARAMETERS (no defaults - must be supplied at run time)
     # =========================================================================
     phase_00_infra_man_pvc_name: str,
-    phase_01_dataset_man_data_uri: str,
     phase_04_registry_man_address: str,
     phase_05_deploy_man_namespace: str,
     # =========================================================================
     # KEY PARAMETERS - Sorted by stage
     # =========================================================================
     # Stage 1: Dataset
+    phase_01_dataset_man_data_uri: str = "hf://Agent-Ark/Toucan-1.5M:Qwen3",
     phase_01_dataset_man_data_split: float = 1.0,
     # Stage 2: Training
     phase_02_train_man_model: str = "Qwen/Qwen3-4B",
@@ -112,7 +112,10 @@ def lora_grpo_pipeline(
             your Data Science Project -> Cluster Storage -> Create storage, select
             ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name
             (not a path). Example: ``grpo-pipeline-pvc``
-        phase_01_dataset_man_data_uri: URI of the dataset. Supported schemes:
+        phase_01_dataset_man_data_uri: URI of the dataset. Defaults to
+            ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset
+            used as a reference example) - override with your own dataset URI.
+            Supported schemes:
             - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``
               Some datasets have multiple subsets (configs). If the dataset has
               more than one config, you must append ``:config`` - otherwise
