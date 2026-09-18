@@ -4,7 +4,7 @@
 
 ## Overview 🧾
 
-LoRA GRPO Training Pipeline — RLVR fine-tuning with promotion gating.
+LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
 A 5-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, evaluates training results, and conditionally registers and deploys the model only if training shows improvement.
 
@@ -15,15 +15,15 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 
 | Parameter | Type | Default | Description |
 | --------- | ---- | ------- | ----------- |
-| `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the ReadWriteMany PVC used for training checkpoints and model serving. To create one: in RHOAI open your Data Science Project → Cluster Storage → Create storage, select ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name (not a path). Example: ``grpo-pipeline-pvc`` |
-| `phase_01_dataset_man_data_uri` | `str` | `None` | URI of the dataset. Supported schemes: - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``   Some datasets have multiple subsets (configs). If the dataset has   more than one config, you must append ``:config`` — otherwise   ``load_dataset`` will fail asking you to choose. Single-config   datasets do not need it.   Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` - S3: ``s3://bucket/path/to/file.jsonl`` - HTTP: ``https://host/file.jsonl`` (must point to a raw file,   not an HTML page) - PVC file: ``pvc://path/to/file.jsonl`` |
-| `phase_04_registry_man_address` | `str` | `None` | Hostname of your Model Registry service (required). Find it in RHOAI under Model Registry → your registry → connection details. Example: ``model-registry-service.redhat-ods-applications.svc.cluster.local`` |
-| `phase_05_deploy_man_namespace` | `str` | `None` | OpenShift project where the KServe InferenceService will be created. Must be a namespace with KServe enabled — typically the same as your Data Science Project. Example: ``my-ds-project`` |
-| `phase_01_dataset_man_data_split` | `float` | `1.0` | Fraction of the dataset used for training (remainder becomes eval). Default 1.0 uses all rows, which is correct for GRPO — improvement is measured from rollout rewards, not a held-out eval set. |
+| `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the ReadWriteMany PVC used for training checkpoints and model serving. To create one: in RHOAI open your Data Science Project -> Cluster Storage -> Create storage, select ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name (not a path). Example: ``grpo-pipeline-pvc`` |
+| `phase_01_dataset_man_data_uri` | `str` | `None` | URI of the dataset. Supported schemes: - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``   Some datasets have multiple subsets (configs). If the dataset has   more than one config, you must append ``:config`` - otherwise   ``load_dataset`` will fail asking you to choose. Single-config   datasets do not need it.   Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` - S3: ``s3://bucket/path/to/file.jsonl`` - HTTP: ``https://host/file.jsonl`` (must point to a raw file,   not an HTML page) - PVC file: ``pvc://path/to/file.jsonl`` |
+| `phase_04_registry_man_address` | `str` | `None` | Hostname of the Model Registry service (required). Find it in RHOAI Dashboard -> AI Hub -> Models -> Registry -> click View Details and copy the Server URL. |
+| `phase_05_deploy_man_namespace` | `str` | `None` | OpenShift project where the KServe InferenceService will be created. Must be the same namespace where your PVC is provisioned. Should have KServe enabled - typically your Data Science Project. Example: ``my-ds-project`` |
+| `phase_01_dataset_man_data_split` | `float` | `1.0` | Fraction of the dataset used for training (remainder becomes eval). Default 1.0 uses all rows, which is correct for GRPO - improvement is measured from rollout rewards, not a held-out eval set. |
 | `phase_02_train_man_model` | `str` | `Qwen/Qwen3-4B` | HuggingFace model ID of the base model to fine-tune. If the model is gated, configure the ``hf-token`` secret. Example: ``Qwen/Qwen3-4B`` or ``ibm-granite/granite-3.3-8b-instruct`` |
-| `phase_02_train_man_num_iterations` | `int` | `50` | Number of GRPO policy-gradient update steps. Each iteration generates ``group_size`` rollouts per prompt and updates the LoRA adapter. The promotion gate (stage 3) requires ``final_reward > initial_reward`` — fewer than 30 iterations rarely pass it. Default 50 runs in ~1-2 hours on one A100 80GB with Qwen3-4B. Use 100+ for a production-quality training run. |
+| `phase_02_train_man_num_iterations` | `int` | `50` | Number of GRPO policy-gradient update steps. Each iteration generates ``group_size`` rollouts per prompt and updates the LoRA adapter. The promotion gate (stage 3) requires ``final_reward > initial_reward`` - fewer than 30 iterations rarely pass it. Default 50 runs in ~1-2 hours on one A100 80GB with Qwen3-4B. Use 100+ for a production-quality training run. |
 | `phase_02_train_man_group_size` | `int` | `4` | Rollouts generated per prompt to estimate relative reward advantage. Higher = better gradient signal but more memory and time. Default 4 is suitable for single-GPU runs. |
-| `phase_02_train_man_prompt_batch_size` | `int` | `50` | Prompts processed per GRPO update step. Total rollout batch = ``prompt_batch_size × group_size`` (e.g., 50 × 4 = 200). Reduce if you hit out-of-memory errors. Example: ``50`` |
+| `phase_02_train_man_prompt_batch_size` | `int` | `50` | Prompts processed per GRPO update step. Total rollout batch = ``prompt_batch_size x group_size`` (e.g., 50 x 4 = 200). Reduce if you hit out-of-memory errors. Example: ``50`` |
 | `phase_02_train_man_lora_r` | `int` | `16` | LoRA adapter rank. Higher = more adapter capacity but slower training and more memory. Typical values: 8 (lightweight), 16 (balanced), 32 (high capacity). Example: ``16`` |
 | `phase_02_train_man_lora_alpha` | `int` | `16` | LoRA scaling factor. Effective weight scale = ``lora_alpha / lora_r``. Set equal to ``lora_r`` for neutral scaling (recommended). Example: ``16`` |
 | `phase_04_registry_man_name` | `str` | `grpo-model` | Name to register the model under. Must be unique within your Model Registry. Example: ``qwen3-grpo-tool-call`` |
@@ -36,7 +36,7 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_02_train_opt_enforce_eager` | `bool` | `True` | Disables torch.compile and CUDA graph capture in vLLM. Must be True for Qwen3 models (known CUDAGraph incompatibility). Set False for other models for faster rollouts. |
 | `phase_02_train_opt_env_vars` | `str` | `""` | Comma-separated ``KEY=VALUE`` environment variables injected into the training pod. Leave empty if not needed. Example: ``NCCL_DEBUG=INFO,TORCH_DISTRIBUTED_DEBUG=DETAIL`` |
 | `phase_02_train_opt_cpu` | `str` | `4` | CPU cores requested for the TrainJob worker pod. Example: ``4`` |
-| `phase_02_train_opt_gpu` | `int` | `1` | GPUs per TrainJob worker. ART requires exactly 1 GPU per worker — do not change this. |
+| `phase_02_train_opt_gpu` | `int` | `1` | GPUs per TrainJob worker. ART requires exactly 1 GPU per worker - do not change this. |
 | `phase_02_train_opt_memory` | `str` | `64Gi` | RAM requested for the TrainJob worker pod. For Qwen3-4B on an 80GB GPU, 64Gi is sufficient. Example: ``64Gi`` |
 | `phase_02_train_opt_labels` | `str` | `""` | Comma-separated ``key=value`` labels applied to the TrainJob worker pod for cost tracking or scheduling constraints. Leave empty if not needed. Example: ``team=ml,project=grpo`` |
 | `phase_02_train_opt_annotations` | `str` | `""` | Comma-separated ``key=value`` annotations applied to the TrainJob worker pod. Leave empty if not needed. |
