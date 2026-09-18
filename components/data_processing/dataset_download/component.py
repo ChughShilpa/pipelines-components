@@ -153,11 +153,26 @@ def dataset_download(
                 return True
         return False
 
+    # Field name aliases accepted for the single-turn target-tool indicator.
+    # 'target_tool_name' is the canonical singular field; 'target_tools' is a
+    # common plural/list variant used by some tool-calling datasets (e.g.,
+    # Agent-Ark/Toucan-1.5M) to record one or more seed tools per example.
+    _TARGET_TOOL_FIELDS = ("target_tool_name", "target_tools")
+
+    def _get_target_tool_value(item: dict):
+        """Return the first non-empty target-tool field value, checking known aliases."""
+        for field in _TARGET_TOOL_FIELDS:
+            value = item.get(field)
+            if value:
+                return value
+        return None
+
     def validate_tool_call_format_dataset(dataset: Dataset) -> bool:
         """Validate that dataset follows tool-call format for GRPO training.
 
         Detects format from the first sample and validates all checked samples match:
-        - Single-turn: each sample has 'target_tool_name' and 'question'
+        - Single-turn: each sample has a target-tool field (`target_tool_name` or
+          `target_tools`) and a 'question' field
         - Multi-turn: each sample has 'messages' with at least one assistant tool_calls entry
         """
         if len(dataset) == 0:
@@ -168,7 +183,7 @@ def dataset_download(
 
         # Detect format from first sample (use .get() because Arrow-backed
         # datasets always contain all columns; missing values are None)
-        is_single_turn = bool(first.get("target_tool_name")) and bool(first.get("question"))
+        is_single_turn = bool(_get_target_tool_value(first)) and bool(first.get("question"))
         first_messages = first.get("messages", None)
         is_multi_turn = (
             isinstance(first_messages, list) and len(first_messages) > 0 and _has_tool_calls_in_messages(first_messages)
@@ -177,7 +192,8 @@ def dataset_download(
         if not is_single_turn and not is_multi_turn:
             raise ValueError(
                 f"Item 0 does not match any supported tool-call format. "
-                f"Expected either (1) single-turn with 'target_tool_name' and 'question' fields, "
+                f"Expected either (1) single-turn with a target-tool field "
+                f"({' or '.join(_TARGET_TOOL_FIELDS)}) and 'question' fields, "
                 f"or (2) multi-turn with 'messages' containing assistant tool_calls. "
                 f"Found keys: {list(first.keys())}"
             )
@@ -190,9 +206,9 @@ def dataset_download(
         if is_single_turn:
             for i in range(num_to_check):
                 item = dataset[i]
-                if not item.get("target_tool_name"):
+                if not _get_target_tool_value(item):
                     raise ValueError(
-                        f"Item {i}: 'target_tool_name' is missing or empty. "
+                        f"Item {i}: none of {_TARGET_TOOL_FIELDS} is present or non-empty. "
                         f"All samples must be single-turn format (detected from first sample)."
                     )
                 if not item.get("question"):
