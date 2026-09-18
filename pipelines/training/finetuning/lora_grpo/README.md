@@ -29,7 +29,6 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_04_registry_man_name` | `str` | `grpo-model` | Name to register the model under. Must be unique within your Model Registry. Example: ``qwen3-grpo-tool-call`` |
 | `phase_04_registry_man_version` | `str` | `1.0.0` | Version tag for this model revision. Use semantic versioning. Example: ``1.0.0`` |
 | `phase_01_dataset_opt_subset` | `int` | `0` | Download and use only this many rows (random sample). Set to 0 for all rows. Use a small number for quick pipeline smoke-tests. Example: ``500`` |
-| `phase_02_train_opt_data_path` | `str` | `""` | When set, training loads data from this HuggingFace ID or file path instead of the dataset downloaded in stage 1. Leave empty to use the stage 1 dataset. Example: ``Agent-Ark/Toucan-1.5M`` or ``/mnt/pipeline/datasets/train.jsonl`` |
 | `phase_02_train_opt_data_config` | `str` | `""` | HuggingFace dataset config (split or subset name). Only needed for multi-config datasets. For Agent-Ark/Toucan-1.5M set ``Qwen3``. Leave empty for single-config datasets. |
 | `phase_02_train_opt_n_train` | `int` | `200` | Maximum rows ART draws from the dataset per run. Independent of ``phase_01_dataset_opt_subset``. Example: ``200`` for quick tests, ``2000`` for a fuller run. |
 | `phase_02_train_opt_learning_rate` | `float` | `1e-05` | AdamW learning rate for LoRA adapter updates. ``1e-5`` is a safe default; increase to ``5e-5`` if reward improvement is too slow. |
