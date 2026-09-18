@@ -38,14 +38,15 @@ PIPELINE_NAME = "lora-grpo-pipeline"
 )
 def lora_grpo_pipeline(
     # =========================================================================
-    # INFRASTRUCTURE (Required)
+    # REQUIRED PARAMETERS (no defaults — must be supplied at run time)
     # =========================================================================
     phase_00_infra_man_pvc_name: str,
+    phase_01_dataset_man_data_uri: str,
+    phase_05_deploy_man_namespace: str,
     # =========================================================================
-    # KEY PARAMETERS (Required/Important) — Sorted by stage
+    # KEY PARAMETERS — Sorted by stage
     # =========================================================================
     # Stage 1: Dataset
-    phase_01_dataset_man_data_uri: str,
     phase_01_dataset_man_data_split: float = 1.0,
     # Stage 2: Training
     phase_02_train_man_model: str = "Qwen/Qwen3-4B",
@@ -53,13 +54,11 @@ def lora_grpo_pipeline(
     phase_02_train_man_group_size: int = 4,
     phase_02_train_man_prompt_batch_size: int = 50,
     phase_02_train_man_lora_r: int = 16,
-    phase_02_train_man_lora_alpha: int = 8,
+    phase_02_train_man_lora_alpha: int = 16,
     # Stage 4: Registry
     phase_04_registry_man_address: str = "",
     phase_04_registry_man_name: str = "grpo-model",
     phase_04_registry_man_version: str = "1.0.0",
-    # Stage 5: Deployment
-    phase_05_deploy_man_namespace: str = "",
     # =========================================================================
     # OPTIONAL PARAMETERS — Sorted by stage
     # =========================================================================
@@ -67,7 +66,7 @@ def lora_grpo_pipeline(
     phase_01_dataset_opt_subset: int = 0,
     # Stage 2
     phase_02_train_opt_data_path: str = "",
-    phase_02_train_opt_data_config: str = "Qwen3",
+    phase_02_train_opt_data_config: str = "",
     phase_02_train_opt_n_train: int = 200,
     phase_02_train_opt_learning_rate: float = 1e-5,
     phase_02_train_opt_gpu_memory_utilization: float = 0.45,
@@ -122,15 +121,16 @@ def lora_grpo_pipeline(
         phase_02_train_man_group_size: Rollouts per prompt for advantage estimation.
         phase_02_train_man_prompt_batch_size: Prompts per training batch.
         phase_02_train_man_lora_r: LoRA rank (controls adapter capacity).
-        phase_02_train_man_lora_alpha: LoRA scaling factor.
+        phase_02_train_man_lora_alpha: LoRA scaling factor (typically >= lora_r).
         phase_04_registry_man_address: Model Registry address (empty = skip).
         phase_04_registry_man_name: Model name in registry.
         phase_04_registry_man_version: Semantic version (major.minor.patch).
-        phase_05_deploy_man_namespace: Namespace for KServe deployment.
+        phase_05_deploy_man_namespace: Namespace for KServe deployment (required).
         phase_01_dataset_opt_subset: Limit dataset to N samples (0 = all).
         phase_02_train_opt_data_path: Override dataset path or HuggingFace ID
             (bypasses dataset artifact).
-        phase_02_train_opt_data_config: HuggingFace dataset config name.
+        phase_02_train_opt_data_config: HuggingFace dataset config name
+            (empty = use dataset default; set explicitly for custom configs).
         phase_02_train_opt_n_train: Number of training samples from the dataset.
         phase_02_train_opt_learning_rate: Learning rate (default 1e-5).
         phase_02_train_opt_gpu_memory_utilization: Fraction of GPU memory for
