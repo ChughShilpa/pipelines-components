@@ -73,8 +73,8 @@ def rag_templates_optimization(
             ``pattern.json`` indexing spec for downstream deployment.
         db_secret_name: Name of the K8s secret holding the database
             configuration. Its keys select the backend: ``MILVUS_*`` keys use
-            Milvus, ``PGVECTOR_*`` keys use PGVector. Propagated into each
-            generated ``pattern.json`` indexing spec.
+            Milvus, ``PGVECTOR_*`` keys use PGVector, ``NEO4J_*`` keys use Neo4j.
+            Propagated into each generated ``pattern.json`` indexing spec.
         input_data_secret_name: Name of the K8s secret with S3 credentials for
             input data.
         input_data_bucket_name: S3 bucket containing input documents.
@@ -111,7 +111,8 @@ def rag_templates_optimization(
         MAAS_BASE_URL, MAAS_API_KEY for inference. Plus the vector database
         configuration injected from ``db_secret_name``: ``MILVUS_*`` keys
         (at least ``MILVUS_URI``) select Milvus, ``PGVECTOR_*`` keys select
-        PGVector.
+        PGVector, ``NEO4J_*`` keys (at least ``NEO4J_URI`` and ``NEO4J_PASSWORD``)
+        select Neo4j.
 
     Environment variables (optional):
         KFP_MLFLOW_CONFIG, injected by the platform MLflow integration. See
@@ -165,6 +166,23 @@ def rag_templates_optimization(
             "inference_max_threads": 4,
             "warm_start_strategy": "balanced",
             "fields_to_balance": ["foundation_model", "embedding_model", "chunking_method"],
+        },
+    }
+    PRESET_KG_EXTRACTION_CONFIG = {
+        "speed": {"mode": "constrained"},
+        "balanced": {
+            "mode": "free",
+            "max_entities_per_chunk": 5,
+            "max_relationships_per_chunk": 5,
+        },
+    }
+    PRESET_GRAPH_RETRIEVAL_CONFIG = {
+        # Use AI4RAG's Neo4j graph-retrieval defaults for the speed preset.
+        "speed": {},
+        "balanced": {
+            "entity_pivot_limit": 3,
+            "entity_relationship_hops": 2,
+            "relationship_neighbor_limit": 5,
         },
     }
 
@@ -237,9 +255,15 @@ def rag_templates_optimization(
                             "collection_name": store_binding["collection_name"],
                             "embedding_model_id": settings["embedding"]["model_id"],
                             "embedding_params": settings["embedding"]["embedding_params"],
+                            "foundation_model_id": settings["generation"]["model_id"],
+                            "foundation_model_params": {
+                                "temperature": settings["generation"]["temperature"],
+                                "max_completion_tokens": settings["generation"]["max_completion_tokens"],
+                            },
                             "chunking_method": settings["chunking"]["method"],
                             "chunk_size": settings["chunking"]["chunk_size"],
                             "chunk_overlap": settings["chunking"]["chunk_overlap"],
+                            "kg_extraction_config": indexing_pipeline_params.get("kg_extraction_config"),
                         },
                         "overrides_allowed": [
                             "input_data_secret_name",
@@ -251,15 +275,27 @@ def rag_templates_optimization(
                     }
                 }
 
+            # Neo4j patterns build and query a knowledge graph, rather than a
+            # plain embedding index.  Their notebooks therefore need the graph
+            # construction and graph-retrieval flows; other providers retain
+            # the standard MaaS notebook pair.
+            is_knowledge_graph_pattern = store_binding["provider_type"] == "neo4j"
+            indexing_notebook_template = (
+                "mass_creating_knowledge_graph" if is_knowledge_graph_pattern else "maas_indexing"
+            )
+            inference_notebook_template = (
+                "mass_inference_knowledge_graph" if is_knowledge_graph_pattern else "maas_inference"
+            )
+
             generate_notebook_from_template(
-                "maas_indexing",
+                indexing_notebook_template,
                 pattern_data,
                 patt_dir / "indexing.ipynb",
                 input_data_keys=input_data_keys,
                 test_data_key=test_data_key,
             )
             generate_notebook_from_template(
-                "maas_inference",
+                inference_notebook_template,
                 pattern_data,
                 patt_dir / "inference.ipynb",
                 test_data_key=test_data_key,
@@ -380,7 +416,14 @@ def rag_templates_optimization(
     active_evaluators = PRESET_EVALUATORS[preset]
     preset_cfg = PRESET_SETTINGS[preset]
     inference_max_threads = preset_cfg["inference_max_threads"]
-    logging.info("Preset %r: inference_max_threads=%d", preset, inference_max_threads)
+    kg_extraction_config = PRESET_KG_EXTRACTION_CONFIG[preset]
+    graph_retrieval_config = PRESET_GRAPH_RETRIEVAL_CONFIG[preset]
+    logging.info(
+        "Preset %r: inference_max_threads=%d, KG extraction=%s",
+        preset,
+        inference_max_threads,
+        kg_extraction_config,
+    )
 
     def _load_embedded_module(module_filename: str, module_alias: str) -> Any:
         """Load one module from the embedded AutoRAG helpers.
@@ -440,13 +483,15 @@ def rag_templates_optimization(
                 api_key=os.environ["MAAS_API_KEY"],
             )
 
-            if any(k.startswith("MILVUS") for k in os.environ):
+            if "MILVUS_URI" in os.environ:
                 provider = "milvus"
-            elif any(k.startswith("PGVECTOR") for k in os.environ):
+            elif "PGVECTOR_HOST" in os.environ:
                 provider = "pgvector"
+            elif "NEO4J_URI" in os.environ:
+                provider = "neo4j"
             else:
                 raise ValueError(
-                    "No vector database configuration found. Expected MILVUS_* or PGVECTOR_* "
+                    "No vector database configuration found. Expected MILVUS_*, PGVECTOR_*, or NEO4J_* "
                     "environment variables injected from db_secret_name."
                 )
             vector_store_config = get_vector_store_config(provider)
@@ -466,6 +511,7 @@ def rag_templates_optimization(
                 "input_data_bucket_name": input_data_bucket_name,
                 "input_data_keys": input_data_keys or [],
                 "batch_size": 20,
+                "kg_extraction_config": kg_extraction_config,
             }
 
             if (
@@ -548,6 +594,8 @@ def rag_templates_optimization(
                 documents=documents,
                 optimization_metric=optimization_metric,
                 inference_max_threads=inference_max_threads,
+                kg_extraction_config=kg_extraction_config,
+                graph_retrieval_config=graph_retrieval_config,
                 evaluators=evaluators,
             )
 
