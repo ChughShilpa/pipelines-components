@@ -1,7 +1,5 @@
 # Documents Rag Optimization Pipeline ✨
 
-> ⚠️ **Stability: beta** — This asset is not yet stable and may change.
-
 ## Overview 🧾
 
 Automated system for building and optimizing Retrieval-Augmented Generation (RAG) applications.
@@ -33,7 +31,7 @@ deployment settings), executable notebooks, and evaluation results.
 ## Metadata 🗂️
 
 - **Name**: documents-rag-optimization-pipeline
-- **Stability**: beta
+- **Stability**: stable
 - **Managed**: Yes
 - **Dependencies**:
   - Kubeflow:
@@ -50,7 +48,7 @@ deployment settings), executable notebooks, and evaluation results.
   - pipeline
   - autorag
   - rag-optimization
-- **Last Verified**: 2026-10-05 00:00:00+00:00
+- **Last Verified**: 2026-10-13 00:00:00+00:00
 - **Owners**:
   - No Parent Owners: Yes
   - Approvers:

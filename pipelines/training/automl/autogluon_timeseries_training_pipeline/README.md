@@ -1,7 +1,5 @@
 # Autogluon Timeseries Training Pipeline ✨
 
-> ⚠️ **Stability: beta** — This asset is not yet stable and may change.
-
 ## Overview 🧾
 
 AutoGluon time series training pipeline.
@@ -60,7 +58,7 @@ to a single combined ``models_artifact``.
 ## Metadata 🗂️
 
 - **Name**: autogluon-timeseries-training-pipeline
-- **Stability**: beta
+- **Stability**: stable
 - **Managed**: Yes
 - **Dependencies**:
   - Kubeflow:
@@ -71,7 +69,7 @@ to a single combined ``models_artifact``.
   - pipeline
   - automl
   - autogluon-timeseries-training-pipeline
-- **Last Verified**: 2026-07-08 12:00:00+00:00
+- **Last Verified**: 2026-10-13 00:00:00+00:00
 - **Owners**:
   - No Parent Owners: Yes
   - Approvers:

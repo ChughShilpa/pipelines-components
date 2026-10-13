@@ -1,7 +1,5 @@
 # Documents Indexing Pipeline ✨
 
-> ⚠️ **Stability: beta** — This asset is not yet stable and may change.
-
 ## Overview 🧾
 
 Build a production vector index from documents for AutoRAG.
@@ -32,7 +30,7 @@ Discovers documents from object storage, extracts text, and indexes chunks into 
 ## Metadata 🗂️
 
 - **Name**: documents-indexing-pipeline
-- **Stability**: beta
+- **Stability**: stable
 - **Managed**: Yes
 - **Dependencies**:
   - Kubeflow:
@@ -50,7 +48,7 @@ Discovers documents from object storage, extracts text, and indexes chunks into 
   - documents_discovery
   - data_indexing
   - autorag
-- **Last Verified**: 2026-09-15 00:00:00+00:00
+- **Last Verified**: 2026-10-13 00:00:00+00:00
 - **Owners**:
   - No Parent Owners: Yes
   - Approvers:
