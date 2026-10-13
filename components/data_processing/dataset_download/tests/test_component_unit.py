@@ -189,6 +189,59 @@ class TestDatasetDownloadUnitTests:
         assert "s3://" in docstring
         assert "http" in docstring.lower()
 
+    def test_pvc_only_mode_writes_small_manifests(self, tmp_path, monkeypatch):
+        """PVC-only mode avoids serializing a second full KFP dataset artifact."""
+        cache_root = tmp_path / ".cache"
+        for name, value in {
+            "HOME": tmp_path / "home",
+            "XDG_CACHE_HOME": cache_root,
+            "HF_HOME": cache_root / "huggingface",
+            "HF_HUB_CACHE": cache_root / "huggingface" / "hub",
+            "HF_DATASETS_CACHE": cache_root / "huggingface" / "datasets",
+            "HF_XET_CACHE": cache_root / "huggingface" / "xet",
+            "HF_ASSETS_CACHE": cache_root / "huggingface" / "assets",
+            "TMPDIR": tmp_path / ".tmp",
+            "TEMP": tmp_path / ".tmp",
+            "TMP": tmp_path / ".tmp",
+        }.items():
+            monkeypatch.setenv(name, str(value))
+
+        input_path = tmp_path / "input.jsonl"
+        input_path.write_text(
+            json.dumps(
+                {
+                    "question": "Weather in CA?",
+                    "target_tool_name": "get_alerts",
+                    "target_arguments": {"state": "CA"},
+                    "available_tools": [
+                        {
+                            "name": "get_alerts",
+                            "description": "Get weather alerts.",
+                            "parameters": {"type": "object", "properties": {}},
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        train_artifact = _MockArtifact(str(tmp_path / "train-artifact.json"))
+        eval_artifact = _MockArtifact(str(tmp_path / "eval-artifact.json"))
+
+        dataset_download.python_func(
+            train_dataset=train_artifact,
+            eval_dataset=eval_artifact,
+            dataset_uri=str(input_path),
+            pvc_mount_path=str(tmp_path / "workspace"),
+            train_split_ratio=1.0,
+            dataset_format="tool_call",
+            write_kfp_artifacts=False,
+        )
+
+        manifest = json.loads((tmp_path / "train-artifact.json").read_text())
+        assert manifest["pvc_path"].endswith("/datasets/train.jsonl")
+        assert manifest["num_examples"] == 1
+        assert (tmp_path / "workspace/datasets/train.jsonl").exists()
+
 
 class TestToolCallValidation:
     """Tests for tool-call format validation."""

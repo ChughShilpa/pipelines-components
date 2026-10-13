@@ -30,6 +30,7 @@ def dataset_download(
     subset_count: int = 0,
     dataset_format: str = "chat",
     shared_log_file: str = "pipeline_log.txt",
+    write_kfp_artifacts: bool = True,
 ):
     """Download and prepare datasets from multiple sources.
 
@@ -46,8 +47,37 @@ def dataset_download(
         subset_count: Number of examples to use (0 = use all)
         dataset_format: Validation format - "chat" (default) or "tool_call"
         shared_log_file: Name of the shared log file
+        write_kfp_artifacts: Whether to write full dataset files to the KFP
+            artifact paths. Set to False when downstream tasks consume the
+            PVC path directly; the KFP outputs then contain only a small
+            manifest.
     """
     import os
+
+    # Hugging Face defaults to the container's local home/cache directories.
+    # Those directories are backed by node ephemeral storage in KFP pods. Keep
+    # the complete dataset cache on the workspace PVC instead.
+    cache_root = os.path.join(pvc_mount_path, ".cache")
+    hf_home = os.path.join(cache_root, "huggingface")
+    hf_datasets_cache = os.path.join(hf_home, "datasets")
+    tmp_root = os.path.join(pvc_mount_path, ".tmp")
+    for path in (cache_root, hf_home, hf_datasets_cache, tmp_root):
+        os.makedirs(path, exist_ok=True)
+
+    os.environ.update(
+        {
+            "HOME": pvc_mount_path,
+            "XDG_CACHE_HOME": cache_root,
+            "HF_HOME": hf_home,
+            "HF_HUB_CACHE": os.path.join(hf_home, "hub"),
+            "HF_DATASETS_CACHE": hf_datasets_cache,
+            "HF_XET_CACHE": os.path.join(hf_home, "xet"),
+            "HF_ASSETS_CACHE": os.path.join(hf_home, "assets"),
+            "TMPDIR": tmp_root,
+            "TEMP": tmp_root,
+            "TMP": tmp_root,
+        }
+    )
 
     from datasets import Dataset, load_dataset
 
@@ -279,6 +309,7 @@ def dataset_download(
         load_kwargs = {
             "path": ds_id,
             "split": "train",
+            "cache_dir": hf_datasets_cache,
         }
         if ds_config:
             load_kwargs["name"] = ds_config
@@ -298,7 +329,7 @@ def dataset_download(
 
                 # Load dataset info without specifying split
                 try:
-                    load_kwargs_no_split = {"path": ds_id}
+                    load_kwargs_no_split = {"path": ds_id, "cache_dir": hf_datasets_cache}
                     if ds_config:
                         load_kwargs_no_split["name"] = ds_config
                     if hf_token:
@@ -370,7 +401,13 @@ def dataset_download(
             log_message("No credentials found, using default AWS credential chain (IAM role, etc.)")
 
         # Load dataset directly from S3 (no temp file needed)
-        dataset = load_dataset("json", data_files=f"s3://{s3_path}", storage_options=storage_options, split="train")
+        dataset = load_dataset(
+            "json",
+            data_files=f"s3://{s3_path}",
+            storage_options=storage_options,
+            split="train",
+            cache_dir=hf_datasets_cache,
+        )
 
         log_message(f"Loaded {len(dataset)} examples from AWS S3")
         return dataset
@@ -380,7 +417,7 @@ def dataset_download(
         log_message(f"Loading from HTTP: {http_url}")
 
         # Load dataset directly from HTTP URL using datasets library
-        dataset = load_dataset("json", data_files=http_url, split="train")
+        dataset = load_dataset("json", data_files=http_url, split="train", cache_dir=hf_datasets_cache)
 
         log_message(f"Loaded {len(dataset)} examples from HTTP")
         return dataset
@@ -398,7 +435,7 @@ def dataset_download(
 
         # Load using datasets library (supports .json and .jsonl)
         if file_path.endswith(".jsonl") or file_path.endswith(".json"):
-            dataset = load_dataset("json", data_files=file_path, split="train")
+            dataset = load_dataset("json", data_files=file_path, split="train", cache_dir=hf_datasets_cache)
             log_message(f"Loaded {len(dataset)} examples from local file")
             return dataset
         else:
@@ -500,12 +537,6 @@ def dataset_download(
                         ]
                     f.write(_json.dumps(row) + "\n")
 
-        log_message(f"Saving train dataset to {train_dataset.path}")
-        _write_jsonl(train_ds, train_dataset.path)
-
-        log_message(f"Saving eval dataset to {eval_dataset.path}")
-        _write_jsonl(eval_ds, eval_dataset.path)
-
         # Also save to shared PVC for next pipeline step
         pvc_dataset_dir = os.path.join(pvc_mount_path, "datasets")
         os.makedirs(pvc_dataset_dir, exist_ok=True)
@@ -518,6 +549,32 @@ def dataset_download(
 
         log_message(f"Saving eval dataset to PVC: {pvc_eval_path}")
         _write_jsonl(eval_ds, pvc_eval_path)
+
+        if write_kfp_artifacts:
+            log_message(f"Saving train dataset to {train_dataset.path}")
+            _write_jsonl(train_ds, train_dataset.path)
+
+            log_message(f"Saving eval dataset to {eval_dataset.path}")
+            _write_jsonl(eval_ds, eval_dataset.path)
+        else:
+            # Keep KFP output artifacts tiny. The lora-grpo pipeline consumes
+            # the stable PVC path directly, so serializing the full dataset a
+            # second time into KFP's node-local artifact scratch is unnecessary.
+            log_message("Writing PVC dataset manifests to KFP artifact paths")
+            for artifact_path, pvc_path, split, count in (
+                (train_dataset.path, pvc_train_path, "train", len(train_ds)),
+                (eval_dataset.path, pvc_eval_path, "eval", len(eval_ds)),
+            ):
+                with open(artifact_path, "w", encoding="utf-8") as artifact_file:
+                    _json.dump(
+                        {
+                            "dataset_uri": dataset_uri,
+                            "split": split,
+                            "num_examples": count,
+                            "pvc_path": pvc_path,
+                        },
+                        artifact_file,
+                    )
 
         # Save metadata
         train_dataset.metadata = {

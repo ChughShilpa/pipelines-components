@@ -39,6 +39,7 @@ def train_model(
     pvc_path: str,
     output_model: dsl.Output[dsl.Model],
     output_metrics: dsl.Output[dsl.Metrics],
+    training_run_id: str = "",
     dataset: dsl.Input[dsl.Dataset] = None,
     training_base_model: str = "Qwen/Qwen3-4B",
     training_data_path: str = "",
@@ -78,12 +79,16 @@ def train_model(
 
     Args:
         pvc_path: Workspace PVC root path (use dsl.WORKSPACE_PATH_PLACEHOLDER).
+        training_run_id: Unique identifier for this pipeline run. The pipeline
+            supplies the KFP run ID so checkpoints from previous runs are not
+            resumed accidentally on a persistent PVC. If empty, a UUID is used.
         output_model: Output model artifact (merged model).
         output_metrics: Output training metrics artifact.
         dataset: Input training dataset artifact (tool-call traces).
         training_base_model: Base model (HuggingFace ID or local path).
-        training_data_path: Dataset path or HuggingFace ID (e.g., Agent-Ark/Toucan-1.5M).
-            When empty, uses dataset artifact. When set, overrides the artifact.
+        training_data_path: Dataset path or HuggingFace ID (e.g.,
+            Agent-Ark/Toucan-1.5M). When empty, uses the dataset artifact.
+            When set, overrides the artifact.
         training_num_iterations: Number of GRPO training iterations.
         training_group_size: Number of rollouts per prompt for GRPO advantage estimation.
         training_prompt_batch_size: Number of prompts per training batch.
@@ -106,13 +111,17 @@ def train_model(
 
     Environment:
         HF_TOKEN: HuggingFace token for gated models (read from environment).
+
+    Returns:
+        The path to this run's ``training_results.json`` on the shared PVC.
     """
     import glob
     import os
+    import uuid
     from typing import Dict
 
     from data import download_oci_model, prepare_jsonl, resolve_dataset
-    from output import persist_model
+    from output import normalize_tokenizer_config, persist_model, preserve_tokenizer_files
     from setup import configure_env, create_logger, init_k8s, parse_kv, setup_hf_token
     from training import select_runtime, wait_for_training_job
 
@@ -121,13 +130,30 @@ def train_model(
 
     _api = init_k8s(log)
 
-    cache = os.path.join(pvc_path, ".cache", "huggingface")
+    # Use the existing workspace mount as the worker's effective home. This
+    # keeps the worker on one PVC mount and avoids image-specific home paths.
+    worker_home = pvc_path
+    worker_cache = os.path.join(worker_home, ".cache")
+    worker_tmp = os.path.join(worker_home, ".tmp")
+    cache = os.path.join(worker_cache, "huggingface")
+    os.makedirs(worker_cache, exist_ok=True)
+    os.makedirs(worker_tmp, exist_ok=True)
     default_env: Dict[str, str] = {
-        "XDG_CACHE_HOME": "/tmp",
-        "TRITON_CACHE_DIR": "/tmp/.triton",
-        "HF_HOME": "/tmp/.cache/huggingface",
+        "HOME": worker_home,
+        "XDG_CACHE_HOME": worker_cache,
+        "HF_HOME": cache,
+        "HF_TOKEN_PATH": "/var/run/secrets/huggingface/token",
+        "HF_HUB_CACHE": os.path.join(cache, "hub"),
         "HF_DATASETS_CACHE": os.path.join(cache, "datasets"),
         "TRANSFORMERS_CACHE": os.path.join(cache, "transformers"),
+        "VLLM_CACHE_ROOT": os.path.join(worker_cache, "vllm"),
+        "TRITON_CACHE_DIR": os.path.join(worker_cache, "triton"),
+        "TORCH_EXTENSIONS_DIR": os.path.join(worker_cache, "torch_extensions"),
+        "TORCHINDUCTOR_CACHE_DIR": os.path.join(worker_cache, "torchinductor"),
+        "CUDA_CACHE_PATH": os.path.join(worker_cache, "cuda"),
+        "TMPDIR": worker_tmp,
+        "TEMP": worker_tmp,
+        "TMP": worker_tmp,
         "TRANSFORMERS_ATTN_BACKEND": "sdpa",
         "PYTHONUNBUFFERED": "1",
         # Workaround: The training image (odh-th-torch-cuda-py312-rhel9) ships
@@ -169,7 +195,8 @@ def train_model(
     if isinstance(training_base_model, str) and training_base_model.startswith("oci://"):
         resolved = download_oci_model(training_base_model, pvc_path, log)
 
-    ckpt_dir = os.path.join(pvc_path, "checkpoints")
+    run_id = training_run_id.strip() or uuid.uuid4().hex
+    ckpt_dir = os.path.join(pvc_path, "checkpoints", run_id)
     os.makedirs(ckpt_dir, exist_ok=True)
 
     # -- Submit TrainJob ------------------------------------------------
@@ -261,6 +288,22 @@ def train_model(
             if training_pvc_name:
                 all_vols.append({"name": "workspace", "persistentVolumeClaim": {"claimName": training_pvc_name}})
                 all_mounts.append({"name": "workspace", "mountPath": pvc_path})
+                # Keep the HF token out of the TrainJob environment and mount
+                # it as a file instead. The secret is optional for public
+                # models and is never included in logs or resource specs.
+                all_vols.append(
+                    {
+                        "name": "hf-token",
+                        "secret": {"secretName": "hf-token", "optional": True},
+                    }
+                )
+                all_mounts.append(
+                    {
+                        "name": "hf-token",
+                        "mountPath": "/var/run/secrets/huggingface",
+                        "readOnly": True,
+                    }
+                )
             return PodSpecPatch(
                 volumes=all_vols,
                 containers=[ContainerPatch(name="node", volume_mounts=all_mounts)],
@@ -306,12 +349,15 @@ def train_model(
 
         # No func= passed -- Training Hub handles the lora_grpo() call
         # internally with a proper __main__ guard for multiprocessing.spawn.
+        # The worker reads HF_TOKEN through the secret-backed HF_TOKEN_PATH.
+        # Do not serialize the token value into the TrainJob environment.
+        trainer_env = {key: value for key, value in merged_env.items() if key != "HF_TOKEN"}
         job = client.train(
             trainer=TrainingHubTrainer(
                 algorithm=TrainingHubAlgorithms.LORA_GRPO,
                 func_args=params,
                 packages_to_install=[],
-                env=dict(merged_env),
+                env=trainer_env,
                 resources_per_node=resources,
             ),
             options=options,
@@ -351,6 +397,8 @@ def train_model(
 
     tokenizer = AutoTokenizer.from_pretrained(resolved)
     tokenizer.save_pretrained(merged_dir)
+    preserve_tokenizer_files(tokenizer, merged_dir, log)
+    normalize_tokenizer_config(merged_dir, log)
     log.info(f"Merged model saved to {merged_dir}")
 
     # Free memory after merge
@@ -378,7 +426,7 @@ def train_model(
     if adapter_ckpt_path:
         output_model.metadata["adapter_checkpoint"] = adapter_ckpt_path
 
-    return "training completed"
+    return os.path.join(ckpt_dir, "training_results.json")
 
 
 if __name__ == "__main__":

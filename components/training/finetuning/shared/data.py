@@ -88,6 +88,7 @@ def prepare_jsonl(ds_dir: str, jsonl_path: str, log: logging.Logger) -> None:
     try:
         dsk = load_from_disk(ds_dir)
         tr = dsk["train"] if isinstance(dsk, dict) else dsk
+
         try:
             tr.to_json(jsonl_path, lines=True)
             log.info(f"JSONL: {jsonl_path}")

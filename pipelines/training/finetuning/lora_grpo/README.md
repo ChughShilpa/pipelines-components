@@ -9,14 +9,14 @@ LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 A 5-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, evaluates training results, and conditionally registers and deploys the model only if training shows improvement.
 
 Prerequisites: - A ReadWriteMany PVC (e.g., NFS-backed) for model storage and serving. Create with: ``oc create pvc <name> --access-mode=ReadWriteMany --storage-class=nfs-csi --size=50Gi`` - ``kubernetes-credentials`` secret with KUBERNETES_SERVER_URL and KUBERNETES_AUTH_TOKEN (required for TrainJob
-creation). - ``hf-token`` secret (optional, for gated HuggingFace models/datasets). - Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
+creation). - ``hf-token`` secret (optional, for gated HuggingFace models/datasets). - Model Registry RoleBinding for the pipeline ServiceAccount (required for stage 4). - Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
 
 ## Inputs 📥
 
 | Parameter | Type | Default | Description |
 | --------- | ---- | ------- | ----------- |
 | `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the ReadWriteMany PVC used for training checkpoints and model serving. To create one: in RHOAI open your Data Science Project -> Cluster Storage -> Create storage, select ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name (not a path). Example: ``grpo-pipeline-pvc`` |
-| `phase_04_registry_man_address` | `str` | `None` | Hostname of the Model Registry service (required). Find it in RHOAI Dashboard -> AI Hub -> Models -> Registry -> click View Details and copy the Server URL. |
+| `phase_04_registry_man_address` | `str` | `None` | Hostname or IP address of the Model Registry service (required). Pass only the host or IP, without ``http://``, ``https://``, or the ``/api/model_registry/v1alpha3`` path. |
 | `phase_05_deploy_man_namespace` | `str` | `None` | OpenShift project where the KServe InferenceService will be created. Must be the same namespace where your PVC is provisioned. Should have KServe enabled - typically your Data Science Project. Example: ``my-ds-project`` |
 | `phase_01_dataset_man_data_uri` | `str` | `hf://Agent-Ark/Toucan-1.5M:Qwen3` | URI of the dataset. Defaults to ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset used as a reference example) - override with your own dataset URI. Supported schemes: - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``   Some datasets have multiple subsets (configs). If the dataset has   more than one config, you must append ``:config`` - otherwise   ``load_dataset`` will fail asking you to choose. Single-config   datasets do not need it.   Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` - S3: ``s3://bucket/path/to/file.jsonl`` - HTTP: ``https://host/file.jsonl`` (must point to a raw file,   not an HTML page) - PVC file: ``pvc://path/to/file.jsonl`` |
 | `phase_01_dataset_man_data_split` | `float` | `1.0` | Fraction of the dataset used for training (remainder becomes eval). Default 1.0 uses all rows, which is correct for GRPO - improvement is measured from rollout rewards, not a held-out eval set. |
@@ -45,13 +45,14 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_04_registry_opt_description` | `str` | `""` | Free-text description stored with the registered model. Example: ``Qwen3-4B fine-tuned with GRPO for tool-calling tasks`` |
 | `phase_04_registry_opt_format_name` | `str` | `pytorch` | Model serialization format in the registry. Use ``pytorch`` for vLLM-served models. Example: ``pytorch`` |
 | `phase_04_registry_opt_format_version` | `str` | `1.0` | Version of the model format. Use ``1.0`` for PyTorch. Example: ``1.0`` |
-| `phase_04_registry_opt_port` | `int` | `8080` | HTTP port of the Model Registry service. Default 8080 matches the standard RHOAI deployment. |
+| `phase_04_registry_opt_port` | `int` | `8080` | Port of the Model Registry service. Default 8080 matches a typical internal HTTP registry. |
 | `phase_05_deploy_opt_gpu_count` | `int` | `1` | GPUs allocated to the KServe vLLM predictor pod. 1 GPU is sufficient for Qwen3-4B. Example: ``1`` |
 | `phase_05_deploy_opt_max_model_len` | `int` | `4096` | Maximum total token length (prompt + completion) vLLM will handle. Longer contexts use more VRAM. Default 4096 is adequate for tool-call traces. Increase to 8192 for longer prompts. |
 | `phase_05_deploy_opt_min_replicas` | `int` | `1` | Minimum live KServe predictor replicas. Set to 1 to keep the endpoint always warm. Example: ``1`` |
 | `phase_05_deploy_opt_max_replicas` | `int` | `1` | Maximum predictor replicas for autoscaling. Set equal to ``min_replicas`` to disable scaling. Example: ``1`` |
 | `phase_05_deploy_opt_cpu_requests` | `str` | `2` | CPU cores requested and limited for the KServe predictor pod. Example: ``2`` |
 | `phase_05_deploy_opt_memory_requests` | `str` | `8Gi` | RAM requested and limited for the KServe predictor pod. Example: ``8Gi`` |
+| `phase_05_deploy_opt_tokenizer_mode` | `str` | `auto` | vLLM tokenizer mode. ``auto`` uses the fast tokenizer when available. Use ``slow`` when the model requires its HuggingFace slow tokenizer. Use ``mistral`` for models that require the ``mistral_common`` tokenizer. Default: ``auto`` |
 
 ## Metadata 🗂️
 
@@ -95,3 +96,50 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 ## Additional Resources 📚
 
 - **Documentation**: [https://github.com/kubeflow/trainer](https://github.com/kubeflow/trainer)
+
+<!-- custom-content -->
+
+## Storage behavior
+
+The dataset download task stores Hugging Face caches under
+``/mnt/pipeline/.cache/huggingface`` and writes the prepared datasets to
+``/mnt/pipeline/datasets`` on the configured PVC. The training task consumes
+the PVC dataset path directly; it does not transfer a full dataset through a
+node-local KFP artifact directory.
+
+## Model Registry setup
+
+The pipeline registers the trained model in the selected Model Registry and stores the persistent model location as ``pvc://<pvc-name>/final_model``. The registry does not need to run in the pipeline namespace, but the pipeline ServiceAccount must be authorized to access the registry Service.
+
+For the initial pipeline test, select an available registry. The registry namespace is installation-specific; verify it in your cluster:
+
+```bash
+oc get modelregistry -A
+```
+
+The Model Registry operator creates a Role named ``registry-user-<registry-name>``. Bind the selected registry Role to the ServiceAccount used by the pipeline. Replace the namespace, ServiceAccount, and registry name if your cluster uses different values:
+
+```bash
+REGISTRY_NAMESPACE=<model-registry-namespace>
+PIPELINE_NAMESPACE=<pipeline-namespace>
+PIPELINE_SERVICE_ACCOUNT=<pipeline-service-account>
+REGISTRY_NAME=<registry-name>
+
+oc get svc -n "$REGISTRY_NAMESPACE"
+
+oc get role "registry-user-${REGISTRY_NAME}" -n "$REGISTRY_NAMESPACE"
+oc create rolebinding lora-grpo-${REGISTRY_NAME} \
+  --role="registry-user-${REGISTRY_NAME}" \
+  --serviceaccount="${PIPELINE_NAMESPACE}:${PIPELINE_SERVICE_ACCOUNT}" \
+  -n "$REGISTRY_NAMESPACE"
+```
+
+Verify access to the named registry Service. The Role is usually restricted to that Service, so check the resource by name:
+
+```bash
+oc auth can-i get service/${REGISTRY_NAME} \
+  --as="system:serviceaccount:${PIPELINE_NAMESPACE}:${PIPELINE_SERVICE_ACCOUNT}" \
+  -n "$REGISTRY_NAMESPACE"
+```
+
+The result must be ``yes``. Pass the selected registry Service host or IP in ``phase_04_registry_man_address`` and set ``phase_04_registry_opt_port`` to its configured port. Do not paste the dashboard URL path ``/api/model_registry/v1alpha3``. Use a unique model name and version for each registration, then set ``phase_05_deploy_man_namespace`` to the namespace containing the user PVC.

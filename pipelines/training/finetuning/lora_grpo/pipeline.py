@@ -89,6 +89,7 @@ def lora_grpo_pipeline(
     phase_05_deploy_opt_max_replicas: int = 1,
     phase_05_deploy_opt_cpu_requests: str = "2",
     phase_05_deploy_opt_memory_requests: str = "8Gi",
+    phase_05_deploy_opt_tokenizer_mode: str = "auto",
 ):
     """LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
@@ -104,6 +105,8 @@ def lora_grpo_pipeline(
         - ``kubernetes-credentials`` secret with KUBERNETES_SERVER_URL and
           KUBERNETES_AUTH_TOKEN (required for TrainJob creation).
         - ``hf-token`` secret (optional, for gated HuggingFace models/datasets).
+        - Model Registry RoleBinding for the pipeline ServiceAccount (required
+          for stage 4).
         - Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
 
     Args:
@@ -157,9 +160,10 @@ def lora_grpo_pipeline(
         phase_02_train_man_lora_alpha: LoRA scaling factor. Effective weight
             scale = ``lora_alpha / lora_r``. Set equal to ``lora_r`` for neutral
             scaling (recommended). Example: ``16``
-        phase_04_registry_man_address: Hostname of the Model Registry service
-            (required). Find it in RHOAI Dashboard -> AI Hub -> Models ->
-            Registry -> click View Details and copy the Server URL.
+        phase_04_registry_man_address: Hostname or IP address of the Model
+            Registry service (required). Pass only the host or IP, without
+            ``http://``, ``https://``, or the ``/api/model_registry/v1alpha3``
+            path.
         phase_04_registry_man_name: Name to register the model under. Must be
             unique within your Model Registry.
             Example: ``qwen3-grpo-tool-call``
@@ -217,8 +221,8 @@ def lora_grpo_pipeline(
             Example: ``pytorch``
         phase_04_registry_opt_format_version: Version of the model format.
             Use ``1.0`` for PyTorch. Example: ``1.0``
-        phase_04_registry_opt_port: HTTP port of the Model Registry service.
-            Default 8080 matches the standard RHOAI deployment.
+        phase_04_registry_opt_port: Port of the Model Registry service.
+            Default 8080 matches a typical internal HTTP registry.
         phase_05_deploy_opt_gpu_count: GPUs allocated to the KServe vLLM
             predictor pod. 1 GPU is sufficient for Qwen3-4B. Example: ``1``
         phase_05_deploy_opt_max_model_len: Maximum total token length
@@ -235,6 +239,10 @@ def lora_grpo_pipeline(
             the KServe predictor pod. Example: ``2``
         phase_05_deploy_opt_memory_requests: RAM requested and limited for the
             KServe predictor pod. Example: ``8Gi``
+        phase_05_deploy_opt_tokenizer_mode: vLLM tokenizer mode. ``auto`` uses
+            the fast tokenizer when available. Use ``slow`` when the model
+            requires its HuggingFace slow tokenizer. Use ``mistral`` for models
+            that require the ``mistral_common`` tokenizer. Default: ``auto``
     """
     # =========================================================================
     # Stage 1: Dataset Download
@@ -246,6 +254,7 @@ def lora_grpo_pipeline(
         subset_count=phase_01_dataset_opt_subset,
         dataset_format="tool_call",
         shared_log_file="pipeline_log.txt",
+        write_kfp_artifacts=False,
     )
     dataset_download_task.set_caching_options(False)
     kfp.kubernetes.set_image_pull_policy(dataset_download_task, "IfNotPresent")
@@ -265,9 +274,9 @@ def lora_grpo_pipeline(
     # =========================================================================
     training_task = train_model(
         pvc_path=PVC_MOUNT_PATH,
-        dataset=dataset_download_task.outputs["train_dataset"],
+        training_run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
         training_base_model=phase_02_train_man_model,
-        training_data_path="",
+        training_data_path=f"{PVC_MOUNT_PATH}/datasets/train.jsonl",
         training_num_iterations=phase_02_train_man_num_iterations,
         training_group_size=phase_02_train_man_group_size,
         training_prompt_batch_size=phase_02_train_man_prompt_batch_size,
@@ -288,6 +297,7 @@ def lora_grpo_pipeline(
         training_pvc_name=phase_00_infra_man_pvc_name,
     )
     training_task.set_caching_options(False)
+    training_task.after(dataset_download_task)
     kfp.kubernetes.set_image_pull_policy(training_task, "IfNotPresent")
 
     kfp.kubernetes.use_secret_as_env(
@@ -311,7 +321,7 @@ def lora_grpo_pipeline(
     # Stage 3: GRPO Evaluation
     # =========================================================================
     grpo_eval_task = grpo_eval(
-        training_results_path=f"{PVC_MOUNT_PATH}/checkpoints/training_results.json",
+        training_results_path=training_task.outputs["Output"],
     )
     grpo_eval_task.after(training_task)
     grpo_eval_task.set_caching_options(False)
@@ -335,9 +345,7 @@ def lora_grpo_pipeline(
         )
 
     # =========================================================================
-    # Stages 4 + 5: Gated by promotion check
-    # Only run model registration and deployment if training improved
-    # (final_reward > initial_reward across iterations).
+    # Stages 4 + 5 run only when evaluation passes the promotion gate.
     # =========================================================================
     with dsl.If(
         grpo_eval_task.outputs["promotion_passed"] == True,  # noqa: E712 - KFP dsl.If requires explicit == comparison
@@ -346,6 +354,7 @@ def lora_grpo_pipeline(
         # Stage 4: Model Registry
         registry_task = kubeflow_model_registry(
             pvc_mount_path=PVC_MOUNT_PATH,
+            model_pvc_name=phase_00_infra_man_pvc_name,
             input_model=training_task.outputs["output_model"],
             input_metrics=training_task.outputs["output_metrics"],
             eval_metrics=grpo_eval_task.outputs["output_metrics"],
@@ -386,6 +395,7 @@ def lora_grpo_pipeline(
             memory_requests=phase_05_deploy_opt_memory_requests,
             cpu_limits=phase_05_deploy_opt_cpu_requests,
             memory_limits=phase_05_deploy_opt_memory_requests,
+            tokenizer_mode=phase_05_deploy_opt_tokenizer_mode,
         )
         deploy_task.after(registry_task)
         deploy_task.set_caching_options(False)
