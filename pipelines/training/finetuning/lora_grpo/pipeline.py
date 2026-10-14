@@ -1,11 +1,11 @@
 """LoRA GRPO (Group Relative Policy Optimization) Training Pipeline.
 
-A 5-stage pipeline for LoRA GRPO fine-tuning with promotion gating:
-1. Dataset Download - validates tool-call schema on CPU
-2. LoRA GRPO Training - ART backend, 1 GPU TrainJob, merges LoRA adapters
-3. GRPO Evaluation - extracts reward metrics, computes promotion gate
-4. Model Registry - registers promoted model (gated by promotion check)
-5. Model Deployment - deploys via KServe with vLLM (gated by promotion check)
+A 4-stage pipeline for LoRA GRPO fine-tuning with promotion gating:
+1. LoRA GRPO Training - Training Hub loads the dataset from Hugging Face,
+   then ART runs a 1 GPU TrainJob and merges LoRA adapters
+2. GRPO Evaluation - extracts reward metrics, computes promotion gate
+3. Model Registry - registers promoted model (gated by promotion check)
+4. Model Deployment - deploys via KServe with vLLM (gated by promotion check)
 
 Uses the Kubeflow Trainer with ART backend on a single GPU TrainJob.
 Requires a user-provided ReadWriteMany PVC for persistent model storage
@@ -16,8 +16,9 @@ import kfp
 import kfp.kubernetes
 from kfp import dsl
 
-from components.data_processing.dataset_download import dataset_download
-from components.deployment.kubeflow_model_registry import kubeflow_model_registry
+from components.deployment.kubeflow_model_registry import (
+    kubeflow_model_registry as shared_model_registry,
+)
 from components.deployment.model_deployment import model_deployment
 from components.evaluation.grpo_eval import grpo_eval
 from components.training.finetuning.lora_grpo import train_model
@@ -27,6 +28,13 @@ from components.training.finetuning.lora_grpo import train_model
 # =============================================================================
 PVC_MOUNT_PATH = "/mnt/pipeline"
 PIPELINE_NAME = "lora-grpo-pipeline"
+
+# This pipeline pins its registry SDK independently. The shared component keeps
+# its existing dependency for other pipelines that consume it.
+GRPO_MODEL_REGISTRY = dsl.component(
+    base_image="quay.io/opendatahub/odh-th06-cpu-torch291-py312:odh-3.4",
+    packages_to_install=["model-registry==0.3.9"],
+)(shared_model_registry.python_func)
 # =============================================================================
 
 
@@ -46,9 +54,8 @@ def lora_grpo_pipeline(
     # =========================================================================
     # KEY PARAMETERS - Sorted by stage
     # =========================================================================
-    # Stage 1: Dataset
+    # Dataset (loaded directly by Training Hub)
     phase_01_dataset_man_data_uri: str = "hf://Agent-Ark/Toucan-1.5M:Qwen3",
-    phase_01_dataset_man_data_split: float = 1.0,
     # Stage 2: Training
     phase_02_train_man_model: str = "Qwen/Qwen3-4B",
     phase_02_train_man_num_iterations: int = 50,
@@ -61,8 +68,6 @@ def lora_grpo_pipeline(
     # =========================================================================
     # OPTIONAL PARAMETERS - Sorted by stage
     # =========================================================================
-    # Stage 1
-    phase_01_dataset_opt_subset: int = 0,
     # Stage 2
     phase_02_train_opt_data_config: str = "Qwen3",
     phase_02_train_opt_n_train: int = 200,
@@ -93,7 +98,7 @@ def lora_grpo_pipeline(
 ):
     """LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
-    A 5-stage pipeline that trains a language model using LoRA GRPO
+    A 4-stage pipeline that trains a language model using LoRA GRPO
     (Group Relative Policy Optimization) for tool-calling tasks, evaluates
     training results, and conditionally registers and deploys the model
     only if training shows improvement.
@@ -115,29 +120,17 @@ def lora_grpo_pipeline(
             your Data Science Project -> Cluster Storage -> Create storage, select
             ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name
             (not a path). Example: ``grpo-pipeline-pvc``
-        phase_01_dataset_man_data_uri: URI of the dataset. Defaults to
+        phase_01_dataset_man_data_uri: Hugging Face dataset URI. Defaults to
             ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset
-            used as a reference example) - override with your own dataset URI.
-            Supported schemes:
-            - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``
-              Some datasets have multiple subsets (configs). If the dataset has
-              more than one config, you must append ``:config`` - otherwise
-              ``load_dataset`` will fail asking you to choose. Single-config
-              datasets do not need it.
-              Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3``
-            - S3: ``s3://bucket/path/to/file.jsonl``
-            - HTTP: ``https://host/file.jsonl`` (must point to a raw file,
-              not an HTML page)
-            - PVC file: ``pvc://path/to/file.jsonl``
+            used as a reference example). Use ``hf://org/dataset`` or
+            ``hf://org/dataset:config``. The ``hf://`` prefix is optional when
+            supplying a Hugging Face repository ID. Some datasets have multiple
+            configs; append ``:config`` or set ``phase_02_train_opt_data_config``.
         phase_05_deploy_man_namespace: OpenShift project where the KServe
             InferenceService will be created. Must be the same namespace where
             your PVC is provisioned. Should have
             KServe enabled - typically your Data Science Project.
             Example: ``my-ds-project``
-        phase_01_dataset_man_data_split: Fraction of the dataset used for
-            training (remainder becomes eval). Default 1.0 uses all rows, which
-            is correct for GRPO - improvement is measured from rollout rewards,
-            not a held-out eval set.
         phase_02_train_man_model: HuggingFace model ID of the base model to
             fine-tune. If the model is gated, configure the ``hf-token`` secret.
             Example: ``Qwen/Qwen3-4B`` or ``ibm-granite/granite-3.3-8b-instruct``
@@ -169,9 +162,6 @@ def lora_grpo_pipeline(
             Example: ``qwen3-grpo-tool-call``
         phase_04_registry_man_version: Version tag for this model revision.
             Use semantic versioning. Example: ``1.0.0``
-        phase_01_dataset_opt_subset: Download and use only this many rows
-            (random sample). Set to 0 for all rows. Use a small number for
-            quick pipeline smoke-tests. Example: ``500``
         phase_02_train_opt_data_config: HuggingFace dataset config (split or
             subset name). Only needed for multi-config datasets. Defaults to
             ``Qwen3`` to match the default dataset
@@ -179,7 +169,7 @@ def lora_grpo_pipeline(
             ``phase_01_dataset_man_data_uri`` with a single-config dataset,
             set this to an empty string.
         phase_02_train_opt_n_train: Maximum rows ART draws from the dataset
-            per run. Independent of ``phase_01_dataset_opt_subset``.
+            per run. This is independent of the total dataset size.
             Example: ``200`` for quick tests, ``2000`` for a fuller run.
         phase_02_train_opt_learning_rate: AdamW learning rate for LoRA adapter
             updates. ``1e-5`` is a safe default; increase to ``5e-5`` if reward
@@ -244,105 +234,86 @@ def lora_grpo_pipeline(
             requires its HuggingFace slow tokenizer. Use ``mistral`` for models
             that require the ``mistral_common`` tokenizer. Default: ``auto``
     """
-    # =========================================================================
-    # Stage 1: Dataset Download
-    # =========================================================================
-    dataset_download_task = dataset_download(
-        dataset_uri=phase_01_dataset_man_data_uri,
-        pvc_mount_path=PVC_MOUNT_PATH,
-        train_split_ratio=phase_01_dataset_man_data_split,
-        subset_count=phase_01_dataset_opt_subset,
-        dataset_format="tool_call",
-        shared_log_file="pipeline_log.txt",
-        write_kfp_artifacts=False,
-    )
-    dataset_download_task.set_caching_options(False)
-    kfp.kubernetes.set_image_pull_policy(dataset_download_task, "IfNotPresent")
 
-    kfp.kubernetes.use_secret_as_env(
-        dataset_download_task,
-        secret_name="s3-secret",
-        secret_key_to_env={
-            "AWS_ACCESS_KEY_ID": "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY": "AWS_SECRET_ACCESS_KEY",
-        },
-        optional=True,
-    )
-
-    # =========================================================================
-    # Stage 2: LoRA GRPO Training
-    # =========================================================================
-    training_task = train_model(
-        pvc_path=PVC_MOUNT_PATH,
-        training_run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
-        training_base_model=phase_02_train_man_model,
-        training_data_path=f"{PVC_MOUNT_PATH}/datasets/train.jsonl",
-        training_num_iterations=phase_02_train_man_num_iterations,
-        training_group_size=phase_02_train_man_group_size,
-        training_prompt_batch_size=phase_02_train_man_prompt_batch_size,
-        training_n_train=phase_02_train_opt_n_train,
-        training_learning_rate=phase_02_train_opt_learning_rate,
-        training_gpu_memory_utilization=phase_02_train_opt_gpu_memory_utilization,
-        training_enforce_eager=phase_02_train_opt_enforce_eager,
-        training_data_config=phase_02_train_opt_data_config,
-        training_lora_r=phase_02_train_man_lora_r,
-        training_lora_alpha=phase_02_train_man_lora_alpha,
-        training_envs=phase_02_train_opt_env_vars,
-        training_resource_cpu_per_worker=phase_02_train_opt_cpu,
-        training_resource_gpu_per_worker=phase_02_train_opt_gpu,
-        training_resource_memory_per_worker=phase_02_train_opt_memory,
-        training_metadata_labels=phase_02_train_opt_labels,
-        training_metadata_annotations=phase_02_train_opt_annotations,
-        training_runtime=phase_02_train_opt_runtime,
-        training_pvc_name=phase_00_infra_man_pvc_name,
-    )
-    training_task.set_caching_options(False)
-    training_task.after(dataset_download_task)
-    kfp.kubernetes.set_image_pull_policy(training_task, "IfNotPresent")
-
-    kfp.kubernetes.use_secret_as_env(
-        task=training_task,
-        secret_name="kubernetes-credentials",
-        secret_key_to_env={
-            "KUBERNETES_SERVER_URL": "KUBERNETES_SERVER_URL",
-            "KUBERNETES_AUTH_TOKEN": "KUBERNETES_AUTH_TOKEN",
-        },
-        optional=False,
-    )
-
-    kfp.kubernetes.use_secret_as_env(
-        task=training_task,
-        secret_name="oci-pull-secret-model-download",
-        secret_key_to_env={"OCI_PULL_SECRET_MODEL_DOWNLOAD": "OCI_PULL_SECRET_MODEL_DOWNLOAD"},
-        optional=True,
-    )
-
-    # =========================================================================
-    # Stage 3: GRPO Evaluation
-    # =========================================================================
-    grpo_eval_task = grpo_eval(
-        training_results_path=training_task.outputs["Output"],
-    )
-    grpo_eval_task.after(training_task)
-    grpo_eval_task.set_caching_options(False)
-    kfp.kubernetes.set_image_pull_policy(grpo_eval_task, "IfNotPresent")
-
-    # Attach HF token to tasks that may access gated resources
-    for _task in [dataset_download_task, training_task]:
+    def configure_training_task(training_task):
+        """Apply shared runtime configuration to the training task."""
+        training_task.set_caching_options(False)
+        kfp.kubernetes.set_image_pull_policy(training_task, "IfNotPresent")
         kfp.kubernetes.use_secret_as_env(
-            task=_task,
+            task=training_task,
+            secret_name="kubernetes-credentials",
+            secret_key_to_env={
+                "KUBERNETES_SERVER_URL": "KUBERNETES_SERVER_URL",
+                "KUBERNETES_AUTH_TOKEN": "KUBERNETES_AUTH_TOKEN",
+            },
+            optional=False,
+        )
+        kfp.kubernetes.use_secret_as_env(
+            task=training_task,
+            secret_name="oci-pull-secret-model-download",
+            secret_key_to_env={"OCI_PULL_SECRET_MODEL_DOWNLOAD": "OCI_PULL_SECRET_MODEL_DOWNLOAD"},
+            optional=True,
+        )
+        kfp.kubernetes.use_secret_as_env(
+            task=training_task,
             secret_name="hf-token",
             secret_key_to_env={"HF_TOKEN": "HF_TOKEN"},
             optional=True,
         )
-
-    # Mount user PVC on all tasks that need shared file access
-    for _task in [dataset_download_task, training_task, grpo_eval_task]:
         kfp.kubernetes.mount_pvc(
-            task=_task,
+            task=training_task,
             pvc_name=phase_00_infra_man_pvc_name,
             mount_path=PVC_MOUNT_PATH,
         )
+        return training_task
+
+    # =====================================================================
+    # Stage 1: LoRA GRPO Training
+    # =====================================================================
+    training_task = configure_training_task(
+        train_model(
+            pvc_path=PVC_MOUNT_PATH,
+            training_run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
+            training_base_model=phase_02_train_man_model,
+            training_data_path=phase_01_dataset_man_data_uri,
+            training_num_iterations=phase_02_train_man_num_iterations,
+            training_group_size=phase_02_train_man_group_size,
+            training_prompt_batch_size=phase_02_train_man_prompt_batch_size,
+            training_n_train=phase_02_train_opt_n_train,
+            training_learning_rate=phase_02_train_opt_learning_rate,
+            training_gpu_memory_utilization=phase_02_train_opt_gpu_memory_utilization,
+            training_enforce_eager=phase_02_train_opt_enforce_eager,
+            training_data_config=phase_02_train_opt_data_config,
+            training_lora_r=phase_02_train_man_lora_r,
+            training_lora_alpha=phase_02_train_man_lora_alpha,
+            training_envs=phase_02_train_opt_env_vars,
+            training_resource_cpu_per_worker=phase_02_train_opt_cpu,
+            training_resource_gpu_per_worker=phase_02_train_opt_gpu,
+            training_resource_memory_per_worker=phase_02_train_opt_memory,
+            training_metadata_labels=phase_02_train_opt_labels,
+            training_metadata_annotations=phase_02_train_opt_annotations,
+            training_runtime=phase_02_train_opt_runtime,
+            training_pvc_name=phase_00_infra_man_pvc_name,
+            training_use_hf_direct=True,
+        )
+    )
+
+    training_results_path = training_task.outputs["Output"]
+    training_model = training_task.outputs["output_model"]
+    training_metrics = training_task.outputs["output_metrics"]
+
+    # =========================================================================
+    # Stage 3: GRPO Evaluation
+    # =========================================================================
+    grpo_eval_task = grpo_eval(training_results_path=training_results_path)
+    grpo_eval_task.after(training_task)
+    grpo_eval_task.set_caching_options(False)
+    kfp.kubernetes.set_image_pull_policy(grpo_eval_task, "IfNotPresent")
+    kfp.kubernetes.mount_pvc(
+        task=grpo_eval_task,
+        pvc_name=phase_00_infra_man_pvc_name,
+        mount_path=PVC_MOUNT_PATH,
+    )
 
     # =========================================================================
     # Stages 4 + 5 run only when evaluation passes the promotion gate.
@@ -352,11 +323,11 @@ def lora_grpo_pipeline(
         name="promotion-gate",
     ):
         # Stage 4: Model Registry
-        registry_task = kubeflow_model_registry(
+        registry_task = GRPO_MODEL_REGISTRY(
             pvc_mount_path=PVC_MOUNT_PATH,
             model_pvc_name=phase_00_infra_man_pvc_name,
-            input_model=training_task.outputs["output_model"],
-            input_metrics=training_task.outputs["output_metrics"],
+            input_model=training_model,
+            input_metrics=training_metrics,
             eval_metrics=grpo_eval_task.outputs["output_metrics"],
             eval_results=grpo_eval_task.outputs["output_reward_chart"],
             registry_address=phase_04_registry_man_address,

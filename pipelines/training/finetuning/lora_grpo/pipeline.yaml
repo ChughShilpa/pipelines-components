@@ -3,9 +3,7 @@
 # Description: LoRA GRPO pipeline: reinforcement learning from verifiable rewards using ART backend on a single GPU TrainJob
 # Inputs:
 #    phase_00_infra_man_pvc_name: str
-#    phase_01_dataset_man_data_split: float [Default: 1.0]
 #    phase_01_dataset_man_data_uri: str [Default: 'hf://Agent-Ark/Toucan-1.5M:Qwen3']
-#    phase_01_dataset_opt_subset: int [Default: 0.0]
 #    phase_02_train_man_group_size: int [Default: 4.0]
 #    phase_02_train_man_lora_alpha: int [Default: 16.0]
 #    phase_02_train_man_lora_r: int [Default: 16.0]
@@ -191,57 +189,6 @@ components:
           parameterType: NUMBER_INTEGER
         pipelinechannel--phase_05_deploy_opt_tokenizer_mode:
           parameterType: STRING
-  comp-dataset-download:
-    executorLabel: exec-dataset-download
-    inputDefinitions:
-      parameters:
-        dataset_format:
-          defaultValue: chat
-          description: Validation format - "chat" (default) or "tool_call"
-          isOptional: true
-          parameterType: STRING
-        dataset_uri:
-          description: Dataset URI (hf://, s3://, https://, pvc:// or absolute path)
-          parameterType: STRING
-        pvc_mount_path:
-          description: Path where the shared PVC is mounted
-          parameterType: STRING
-        shared_log_file:
-          defaultValue: pipeline_log.txt
-          description: Name of the shared log file
-          isOptional: true
-          parameterType: STRING
-        subset_count:
-          defaultValue: 0.0
-          description: Number of examples to use (0 = use all)
-          isOptional: true
-          parameterType: NUMBER_INTEGER
-        train_split_ratio:
-          defaultValue: 0.9
-          description: Train/eval split (0.9 = 90%/10%, 1.0 = no split, all for training)
-          isOptional: true
-          parameterType: NUMBER_DOUBLE
-        write_kfp_artifacts:
-          defaultValue: true
-          description: 'Whether to write full dataset files to the KFP
-
-            artifact paths. Set to False when downstream tasks consume the
-
-            PVC path directly; the KFP outputs then contain only a small
-
-            manifest.'
-          isOptional: true
-          parameterType: BOOLEAN
-    outputDefinitions:
-      artifacts:
-        eval_dataset:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-        train_dataset:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
   comp-grpo-eval:
     executorLabel: exec-grpo-eval
     inputDefinitions:
@@ -600,6 +547,15 @@ components:
           description: Name of the ClusterTrainingRuntime to use.
           isOptional: true
           parameterType: STRING
+        training_use_hf_direct:
+          defaultValue: false
+          description: 'Use the Hugging Face dataset loader directly.
+
+            When true, training_data_path must be an ``hf://`` URI or a Hugging
+
+            Face repository ID; the dataset materialization task is bypassed.'
+          isOptional: true
+          parameterType: BOOLEAN
     outputDefinitions:
       artifacts:
         output_metrics:
@@ -624,404 +580,6 @@ components:
       field: KUBERNETES_VOLUMES
 deploymentSpec:
   executors:
-    exec-dataset-download:
-      container:
-        args:
-        - --executor_input
-        - '{{$}}'
-        - --function_to_execute
-        - dataset_download
-        command:
-        - sh
-        - -c
-        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
-          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'datasets>=2.14.0'\
-          \ 'huggingface-hub>=0.20.0' 's3fs>=2023.1.0'  &&  python3 -m pip install\
-          \ --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5;\
-          \ python_version<\"3.9\"' && \"$0\" \"$@\"\n"
-        - sh
-        - -ec
-        - 'program_path=$(mktemp -d)
-
-
-          printf "%s" "$0" > "$program_path/ephemeral_component.py"
-
-          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-
-          '
-        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef dataset_download(\n    train_dataset: dsl.Output[dsl.Dataset],\n\
-          \    eval_dataset: dsl.Output[dsl.Dataset],\n    dataset_uri: str,\n   \
-          \ pvc_mount_path: str,\n    train_split_ratio: float = 0.9,  # 1.0 = no\
-          \ eval split (all data for training)\n    subset_count: int = 0,\n    dataset_format:\
-          \ str = \"chat\",\n    shared_log_file: str = \"pipeline_log.txt\",\n  \
-          \  write_kfp_artifacts: bool = True,\n):\n    \"\"\"Download and prepare\
-          \ datasets from multiple sources.\n\n    Validates dataset format based\
-          \ on the dataset_format parameter:\n    - \"chat\": Chat template format\
-          \ (messages/conversations with role/content)\n    - \"tool_call\": Tool-call\
-          \ format for GRPO training (single-turn or multi-turn traces)\n\n    Args:\n\
-          \        train_dataset: Output artifact for training dataset (JSONL format)\n\
-          \        eval_dataset: Output artifact for evaluation dataset (JSONL format)\n\
-          \        dataset_uri: Dataset URI (hf://, s3://, https://, pvc:// or absolute\
-          \ path)\n        pvc_mount_path: Path where the shared PVC is mounted\n\
-          \        train_split_ratio: Train/eval split (0.9 = 90%/10%, 1.0 = no split,\
-          \ all for training)\n        subset_count: Number of examples to use (0\
-          \ = use all)\n        dataset_format: Validation format - \"chat\" (default)\
-          \ or \"tool_call\"\n        shared_log_file: Name of the shared log file\n\
-          \        write_kfp_artifacts: Whether to write full dataset files to the\
-          \ KFP\n            artifact paths. Set to False when downstream tasks consume\
-          \ the\n            PVC path directly; the KFP outputs then contain only\
-          \ a small\n            manifest.\n    \"\"\"\n    import os\n\n    # Hugging\
-          \ Face defaults to the container's local home/cache directories.\n    #\
-          \ Those directories are backed by node ephemeral storage in KFP pods. Keep\n\
-          \    # the complete dataset cache on the workspace PVC instead.\n    cache_root\
-          \ = os.path.join(pvc_mount_path, \".cache\")\n    hf_home = os.path.join(cache_root,\
-          \ \"huggingface\")\n    hf_datasets_cache = os.path.join(hf_home, \"datasets\"\
-          )\n    tmp_root = os.path.join(pvc_mount_path, \".tmp\")\n    for path in\
-          \ (cache_root, hf_home, hf_datasets_cache, tmp_root):\n        os.makedirs(path,\
-          \ exist_ok=True)\n\n    os.environ.update(\n        {\n            \"HOME\"\
-          : pvc_mount_path,\n            \"XDG_CACHE_HOME\": cache_root,\n       \
-          \     \"HF_HOME\": hf_home,\n            \"HF_HUB_CACHE\": os.path.join(hf_home,\
-          \ \"hub\"),\n            \"HF_DATASETS_CACHE\": hf_datasets_cache,\n   \
-          \         \"HF_XET_CACHE\": os.path.join(hf_home, \"xet\"),\n          \
-          \  \"HF_ASSETS_CACHE\": os.path.join(hf_home, \"assets\"),\n           \
-          \ \"TMPDIR\": tmp_root,\n            \"TEMP\": tmp_root,\n            \"\
-          TMP\": tmp_root,\n        }\n    )\n\n    from datasets import Dataset,\
-          \ load_dataset\n\n    valid_formats = (\"chat\", \"tool_call\")\n    if\
-          \ dataset_format not in valid_formats:\n        raise ValueError(f\"Unsupported\
-          \ dataset_format: '{dataset_format}'. Must be one of {valid_formats}.\"\
-          )\n\n    # Prefer HF_TOKEN from the environment (typically injected via\
-          \ the `hf-token` Kubernetes secret).\n    # This keeps authentication configuration\
-          \ in Kubernetes secrets instead of pipeline parameters.\n    hf_token =\
-          \ (os.environ.get(\"HF_TOKEN\") or \"\").strip()\n\n    def log_message(msg:\
-          \ str):\n        \"\"\"Log message to console and shared log file.\"\"\"\
-          \n        print(msg)\n        log_path = os.path.join(pvc_mount_path, shared_log_file)\n\
-          \        with open(log_path, \"a\") as f:\n            f.write(msg + \"\\\
-          n\")\n\n    def parse_uri(uri: str) -> tuple[str, str]:\n        \"\"\"\
-          Parse dataset URI to determine source type and path.\n\n        Args:\n\
-          \            uri: Dataset URI with scheme. Supported formats:\n        \
-          \        - HuggingFace: hf://dataset-name or dataset-name\n            \
-          \    - S3/MinIO: s3://bucket/path/to/file.jsonl\n                - HTTP/HTTPS:\
-          \ http://... or https://... (e.g., MinIO shared links)\n               \
-          \ - Local/PVC: pvc://path/to/file.jsonl or /absolute/path/to/file.jsonl\n\
-          \n        Returns:\n            Tuple of (source_type, path) where source_type\
-          \ is 'hf', 's3', 'http', or 'local'\n        \"\"\"\n        uri = uri.strip()\n\
-          \n        # Check for explicit schemes\n        if uri.startswith(\"http://\"\
-          ) or uri.startswith(\"https://\"):\n            return (\"http\", uri)\n\
-          \        elif uri.startswith(\"hf://\"):\n            return (\"hf\", uri[5:])\n\
-          \        elif uri.startswith(\"s3://\"):\n            return (\"s3\", uri[5:])\n\
-          \        elif uri.startswith(\"pvc://\"):\n            return (\"local\"\
-          , uri[6:])\n        elif uri.startswith(\"/\"):\n            return (\"\
-          local\", uri)\n        else:\n            # Default to HuggingFace if no\
-          \ scheme\n            return (\"hf\", uri)\n\n    def validate_chat_format_dataset(dataset:\
-          \ Dataset) -> bool:\n        \"\"\"Validate that dataset follows chat template\
-          \ format.\n\n        Expected format:\n        - Each entry should have\
-          \ 'messages' or 'conversations' field\n        - Messages should be a list\
-          \ of dicts with 'role' and 'content'\n        - Roles should be from: 'system',\
-          \ 'user', 'assistant', 'function', 'tool'\n        \"\"\"\n        if len(dataset)\
-          \ == 0:\n            raise ValueError(\"Dataset is empty\")\n\n        valid_roles\
-          \ = {\"system\", \"user\", \"assistant\", \"function\", \"tool\"}\n\n  \
-          \      # Check first 100 examples (or fewer if dataset is smaller)\n   \
-          \     num_to_check = min(100, len(dataset))\n\n        for i in range(num_to_check):\n\
-          \            item = dataset[i]\n\n            # Check for common chat format\
-          \ fields\n            if \"messages\" in item:\n                messages\
-          \ = item[\"messages\"]\n            elif \"conversations\" in item:\n  \
-          \              messages = item[\"conversations\"]\n            else:\n \
-          \               raise ValueError(\n                    f\"Item {i} missing\
-          \ 'messages' or 'conversations' field. Found keys: {list(item.keys())}\"\
-          \n                )\n\n            if not isinstance(messages, list):\n\
-          \                raise ValueError(f\"Item {i}: messages must be a list\"\
-          )\n\n            for j, msg in enumerate(messages):\n                if\
-          \ not isinstance(msg, dict):\n                    raise ValueError(f\"Item\
-          \ {i}, message {j}: must be a dict\")\n\n                if \"role\" not\
-          \ in msg or \"content\" not in msg:\n                    raise ValueError(f\"\
-          Item {i}, message {j}: must have 'role' and 'content' fields\")\n\n    \
-          \            if msg[\"role\"] not in valid_roles:\n                    raise\
-          \ ValueError(\n                        f\"Item {i}, message {j}: invalid\
-          \ role '{msg['role']}'. Must be one of {valid_roles}\"\n               \
-          \     )\n\n        log_message(f\"Dataset validated: {len(dataset)} examples\
-          \ in chat format\")\n        return True\n\n    def _has_tool_calls_in_messages(messages:\
-          \ list) -> bool:\n        \"\"\"Check if any assistant message in the list\
-          \ contains tool_calls.\"\"\"\n        for msg in messages:\n           \
-          \ if not isinstance(msg, dict) or msg.get(\"role\") != \"assistant\":\n\
-          \                continue\n            tool_calls = msg.get(\"tool_calls\"\
-          )\n            if isinstance(tool_calls, list) and tool_calls:\n       \
-          \         return True\n        return False\n\n    # Field name aliases\
-          \ accepted for the single-turn target-tool indicator.\n    # 'target_tool_name'\
-          \ is the canonical singular field; 'target_tools' is a\n    # common plural/list\
-          \ variant used by some tool-calling datasets (e.g.,\n    # Agent-Ark/Toucan-1.5M)\
-          \ to record one or more seed tools per example.\n    _TARGET_TOOL_FIELDS\
-          \ = (\"target_tool_name\", \"target_tools\")\n\n    def _get_target_tool_value(item:\
-          \ dict):\n        \"\"\"Return the first non-empty target-tool field value,\
-          \ checking known aliases.\"\"\"\n        for field in _TARGET_TOOL_FIELDS:\n\
-          \            value = item.get(field)\n            if value:\n          \
-          \      return value\n        return None\n\n    def validate_tool_call_format_dataset(dataset:\
-          \ Dataset) -> bool:\n        \"\"\"Validate that dataset follows tool-call\
-          \ format for GRPO training.\n\n        Detects format from the first sample\
-          \ and validates all checked samples match:\n        - Single-turn: each\
-          \ sample has a target-tool field (`target_tool_name` or\n          `target_tools`)\
-          \ and a 'question' field\n        - Multi-turn: each sample has 'messages'\
-          \ with at least one assistant tool_calls entry\n        \"\"\"\n       \
-          \ if len(dataset) == 0:\n            raise ValueError(\"Dataset is empty\"\
-          )\n\n        num_to_check = min(100, len(dataset))\n        first = dataset[0]\n\
-          \n        # Detect format from first sample (use .get() because Arrow-backed\n\
-          \        # datasets always contain all columns; missing values are None)\n\
-          \        is_single_turn = bool(_get_target_tool_value(first)) and bool(first.get(\"\
-          question\"))\n        first_messages = first.get(\"messages\", None)\n \
-          \       is_multi_turn = (\n            isinstance(first_messages, list)\
-          \ and len(first_messages) > 0 and _has_tool_calls_in_messages(first_messages)\n\
-          \        )\n\n        if not is_single_turn and not is_multi_turn:\n   \
-          \         raise ValueError(\n                f\"Item 0 does not match any\
-          \ supported tool-call format. \"\n                f\"Expected either (1)\
-          \ single-turn with a target-tool field \"\n                f\"({' or '.join(_TARGET_TOOL_FIELDS)})\
-          \ and 'question' fields, \"\n                f\"or (2) multi-turn with 'messages'\
-          \ containing assistant tool_calls. \"\n                f\"Found keys: {list(first.keys())}\"\
-          \n            )\n\n        if is_single_turn and is_multi_turn:\n      \
-          \      log_message(\n                \"Item 0 matches both single-turn and\
-          \ multi-turn tool-call formats; using single-turn validation\"\n       \
-          \     )\n\n        if is_single_turn:\n            for i in range(num_to_check):\n\
-          \                item = dataset[i]\n                if not _get_target_tool_value(item):\n\
-          \                    raise ValueError(\n                        f\"Item\
-          \ {i}: none of {_TARGET_TOOL_FIELDS} is present or non-empty. \"\n     \
-          \                   f\"All samples must be single-turn format (detected\
-          \ from first sample).\"\n                    )\n                if not item.get(\"\
-          question\"):\n                    raise ValueError(\n                  \
-          \      f\"Item {i}: 'question' is missing or empty. \"\n               \
-          \         f\"All samples must be single-turn format (detected from first\
-          \ sample).\"\n                    )\n            log_message(\n        \
-          \        f\"Dataset validated: checked {num_to_check} of {len(dataset)}\
-          \ examples \"\n                f\"in tool-call format (single-turn)\"\n\
-          \            )\n        else:\n            for i in range(num_to_check):\n\
-          \                item = dataset[i]\n                messages = item.get(\"\
-          messages\", None)\n                if not isinstance(messages, list) or\
-          \ len(messages) == 0:\n                    raise ValueError(\n         \
-          \               f\"Item {i}: 'messages' must be a non-empty list. \"\n \
-          \                       f\"All samples must be multi-turn format (detected\
-          \ from first sample).\"\n                    )\n                if not _has_tool_calls_in_messages(messages):\n\
-          \                    raise ValueError(\n                        f\"Item\
-          \ {i}: no assistant message with 'tool_calls' found in 'messages'. \"\n\
-          \                        f\"All samples must be multi-turn format (detected\
-          \ from first sample).\"\n                    )\n            log_message(\n\
-          \                f\"Dataset validated: checked {num_to_check} of {len(dataset)}\
-          \ examples in tool-call format (multi-turn)\"\n            )\n\n       \
-          \ return True\n\n    def split_hf_id_and_config(dataset_path: str) -> tuple[str,\
-          \ str | None]:\n        \"\"\"Split an HF dataset identifier into (id, config)\
-          \ if a config suffix is provided.\n\n        Examples:\n            \"LipengCS/Table-GPT:All\"\
-          \ -> (\"LipengCS/Table-GPT\", \"All\")\n            \"bigcode/the-stack-dedup-python\"\
-          \ -> (\"bigcode/the-stack-dedup-python\", None)\n        \"\"\"\n      \
-          \  if \":\" in dataset_path:\n            base, cfg = dataset_path.split(\"\
-          :\", 1)\n            return base, (cfg or None)\n        return dataset_path,\
-          \ None\n\n    def download_from_huggingface(dataset_path: str) -> Dataset:\n\
-          \        \"\"\"Download dataset from HuggingFace.\"\"\"\n        ds_id,\
-          \ ds_config = split_hf_id_and_config(dataset_path)\n        if ds_config:\n\
-          \            log_message(f\"Downloading from HuggingFace: {ds_id} (config:\
-          \ {ds_config})\")\n        else:\n            log_message(f\"Downloading\
-          \ from HuggingFace: {ds_id}\")\n\n        # Set up authentication if token\
-          \ provided via environment\n        if hf_token:\n            log_message(\"\
-          Using HF_TOKEN from environment for Hugging Face authentication\")\n   \
-          \     else:\n            import logging as _logging\n\n            pretty_id\
-          \ = f\"{ds_id}:{ds_config}\" if ds_config else ds_id\n            _logging.warning(\n\
-          \                \"HF_TOKEN is not set; attempting to download Hugging Face\
-          \ dataset \"\n                f\"'{pretty_id}' without authentication. \"\
-          \n                \"Only public, non-gated datasets can be downloaded. \"\
-          \n                \"If you need access to gated datasets, configure the\
-          \ 'hf-token' Kubernetes \"\n                \"secret so HF_TOKEN is available\
-          \ to the component.\"\n            )\n\n        # Try to load with \"train\"\
-          \ split first\n        load_kwargs = {\n            \"path\": ds_id,\n \
-          \           \"split\": \"train\",\n            \"cache_dir\": hf_datasets_cache,\n\
-          \        }\n        if ds_config:\n            load_kwargs[\"name\"] = ds_config\n\
-          \n        if hf_token:\n            load_kwargs[\"token\"] = hf_token\n\n\
-          \        try:\n            dataset = load_dataset(**load_kwargs)\n     \
-          \       log_message(f\"Downloaded {len(dataset)} examples from HuggingFace\
-          \ (split: train)\")\n            return dataset\n\n        except ValueError\
-          \ as e:\n            # If \"train\" split doesn't exist, try to find an\
-          \ alternative\n            if \"Unknown split\" in str(e):\n           \
-          \     log_message(\"'train' split not found, attempting to detect available\
-          \ splits...\")\n\n                # Load dataset info without specifying\
-          \ split\n                try:\n                    load_kwargs_no_split\
-          \ = {\"path\": ds_id, \"cache_dir\": hf_datasets_cache}\n              \
-          \      if ds_config:\n                        load_kwargs_no_split[\"name\"\
-          ] = ds_config\n                    if hf_token:\n                      \
-          \  load_kwargs_no_split[\"token\"] = hf_token\n\n                    # Load\
-          \ all splits\n                    dataset_dict = load_dataset(**load_kwargs_no_split)\n\
-          \n                    # Try common training split names in order of preference\n\
-          \                    preferred_splits = [\"train_sft\", \"train_gen\", \"\
-          train\", \"training\"]\n\n                    for split_name in preferred_splits:\n\
-          \                        if split_name in dataset_dict:\n              \
-          \              log_message(f\"Using split: {split_name}\")\n           \
-          \                 dataset = dataset_dict[split_name]\n                 \
-          \           log_message(f\"Downloaded {len(dataset)} examples from HuggingFace\
-          \ (split: {split_name})\")\n                            return dataset\n\
-          \n                    # If none of the preferred splits found, use the first\
-          \ available split\n                    available_splits = list(dataset_dict.keys())\n\
-          \                    if available_splits:\n                        first_split\
-          \ = available_splits[0]\n                        log_message(f\"Using first\
-          \ available split: {first_split}\")\n                        dataset = dataset_dict[first_split]\n\
-          \                        log_message(f\"Downloaded {len(dataset)} examples\
-          \ from HuggingFace (split: {first_split})\")\n                        return\
-          \ dataset\n                    else:\n                        raise ValueError(\"\
-          No splits found in dataset\")\n\n                except Exception as inner_e:\n\
-          \                    log_message(f\"Error detecting splits: {str(inner_e)}\"\
-          )\n                    raise\n            else:\n                log_message(f\"\
-          Error loading dataset: {str(e)}\")\n                raise\n        except\
-          \ Exception as e:\n            log_message(f\"Error loading dataset: {str(e)}\"\
-          )\n            raise\n\n    def download_from_s3(s3_path: str) -> Dataset:\n\
-          \        \"\"\"Download dataset from AWS S3 using datasets library native\
-          \ S3 support.\"\"\"\n        log_message(f\"Loading from AWS S3: s3://{s3_path}\"\
-          )\n\n        # Get credentials from Kubernetes secret (environment variables)\n\
-          \        access_key = (os.environ.get(\"AWS_ACCESS_KEY_ID\") or \"\").strip()\n\
-          \        secret_key = (os.environ.get(\"AWS_SECRET_ACCESS_KEY\") or \"\"\
-          ).strip()\n\n        # Validate that credentials are present and consistent\n\
-          \        if (access_key and not secret_key) or (secret_key and not access_key):\n\
-          \            raise ValueError(\n                \"S3 credentials misconfigured:\
-          \ AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must either \"\n         \
-          \       \"both be set and non-empty, or both be unset. Check the 's3-secret'\
-          \ Kubernetes secret.\"\n            )\n        if not access_key and not\
-          \ secret_key:\n            raise ValueError(\n                \"S3 credentials\
-          \ missing: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be provided\
-          \ via \"\n                \"the 's3-secret' Kubernetes secret when using\
-          \ s3:// dataset URIs.\"\n            )\n\n        # Build storage_options\
-          \ for datasets library\n        storage_options = {}\n\n        # Add credentials\
-          \ if available (otherwise uses default AWS credential chain)\n        if\
-          \ access_key and secret_key:\n            storage_options[\"key\"] = access_key\n\
-          \            storage_options[\"secret\"] = secret_key\n            log_message(\"\
-          Using S3 credentials from Kubernetes secret\")\n        else:\n        \
-          \    log_message(\"No credentials found, using default AWS credential chain\
-          \ (IAM role, etc.)\")\n\n        # Load dataset directly from S3 (no temp\
-          \ file needed)\n        dataset = load_dataset(\n            \"json\",\n\
-          \            data_files=f\"s3://{s3_path}\",\n            storage_options=storage_options,\n\
-          \            split=\"train\",\n            cache_dir=hf_datasets_cache,\n\
-          \        )\n\n        log_message(f\"Loaded {len(dataset)} examples from\
-          \ AWS S3\")\n        return dataset\n\n    def download_from_http(http_url:\
-          \ str) -> Dataset:\n        \"\"\"Download dataset from HTTP/HTTPS URL (e.g.,\
-          \ MinIO shared links).\"\"\"\n        log_message(f\"Loading from HTTP:\
-          \ {http_url}\")\n\n        # Load dataset directly from HTTP URL using datasets\
-          \ library\n        dataset = load_dataset(\"json\", data_files=http_url,\
-          \ split=\"train\", cache_dir=hf_datasets_cache)\n\n        log_message(f\"\
-          Loaded {len(dataset)} examples from HTTP\")\n        return dataset\n\n\
-          \    def load_from_local(file_path: str) -> Dataset:\n        \"\"\"Load\
-          \ dataset from local/PVC file path.\"\"\"\n        log_message(f\"Loading\
-          \ from local path: {file_path}\")\n\n        # If relative path, make it\
-          \ relative to pvc_mount_path\n        if not file_path.startswith(\"/\"\
-          ):\n            file_path = os.path.join(pvc_mount_path, file_path)\n\n\
-          \        if not os.path.exists(file_path):\n            raise FileNotFoundError(f\"\
-          Dataset file not found: {file_path}\")\n\n        # Load using datasets\
-          \ library (supports .json and .jsonl)\n        if file_path.endswith(\"\
-          .jsonl\") or file_path.endswith(\".json\"):\n            dataset = load_dataset(\"\
-          json\", data_files=file_path, split=\"train\", cache_dir=hf_datasets_cache)\n\
-          \            log_message(f\"Loaded {len(dataset)} examples from local file\"\
-          )\n            return dataset\n        else:\n            raise ValueError(f\"\
-          Unsupported file format: {file_path}. Expected .json or .jsonl\")\n\n  \
-          \  # =========================================================================\n\
-          \    # Main execution\n    # =========================================================================\n\
-          \n    log_message(\"=\" * 60)\n    log_message(\"Dataset Download Component\
-          \ Started\")\n    log_message(\"=\" * 60)\n    log_message(f\"Dataset URI:\
-          \ {dataset_uri}\")\n    log_message(f\"Train/Eval split: {train_split_ratio:.0%}/{1\
-          \ - train_split_ratio:.0%}\")\n    log_message(f\"Subset count: {subset_count\
-          \ if subset_count > 0 else 'all (no limit)'}\")\n\n    try:\n        # Parse\
-          \ URI and determine source\n        source_type, source_path = parse_uri(dataset_uri)\n\
-          \        log_message(f\"Source type: {source_type}\")\n        log_message(f\"\
-          Source path: {source_path}\")\n\n        # Download/load dataset based on\
-          \ source\n        if source_type == \"hf\":\n            dataset = download_from_huggingface(source_path)\n\
-          \        elif source_type == \"s3\":\n            dataset = download_from_s3(source_path)\n\
-          \        elif source_type == \"http\":\n            dataset = download_from_http(source_path)\n\
-          \        elif source_type == \"local\":\n            dataset = load_from_local(source_path)\n\
-          \        else:\n            raise ValueError(f\"Unknown source type: {source_type}\"\
-          )\n\n        # Apply subset if specified\n        if subset_count and subset_count\
-          \ > 0:\n            import random\n\n            original_size = len(dataset)\n\
-          \            if subset_count < original_size:\n                log_message(f\"\
-          Applying subset: {subset_count} of {original_size} examples\")\n       \
-          \         random.seed(42)  # For reproducibility\n                subset_indices\
-          \ = random.sample(range(original_size), subset_count)\n                dataset\
-          \ = dataset.select(subset_indices)\n                log_message(f\"Subset\
-          \ applied: {len(dataset)} examples selected\")\n            else:\n    \
-          \            log_message(f\"Subset count ({subset_count}) >= dataset size\
-          \ ({original_size}), using all examples\")\n\n        # Validate dataset\
-          \ format (dataset_format already validated at top of component)\n      \
-          \  if dataset_format == \"chat\":\n            log_message(\"Validating\
-          \ chat template format...\")\n            validate_chat_format_dataset(dataset)\n\
-          \        elif dataset_format == \"tool_call\":\n            log_message(\"\
-          Validating tool-call format...\")\n            validate_tool_call_format_dataset(dataset)\n\
-          \n        # Split dataset (or use all for training if ratio is 1.0)\n  \
-          \      log_message(f\"Splitting dataset with {len(dataset)} examples...\"\
-          )\n\n        if train_split_ratio >= 1.0:\n            # No split - use\
-          \ all data for training, create empty eval\n            log_message(\"train_split_ratio=1.0:\
-          \ Using all data for training (no eval split)\")\n            train_ds =\
-          \ dataset\n            eval_ds = Dataset.from_dict({k: [] for k in dataset.features.keys()})\n\
-          \            log_message(f\"No split: {len(train_ds)} train, 0 eval (eval\
-          \ dataset will be empty)\")\n        else:\n            split_dataset =\
-          \ dataset.train_test_split(test_size=1 - train_split_ratio, seed=42)\n \
-          \           train_ds = split_dataset[\"train\"]\n            eval_ds = split_dataset[\"\
-          test\"]\n            log_message(f\"Split complete: {len(train_ds)} train,\
-          \ {len(eval_ds)} eval\")\n\n        # Save datasets as JSONL files\n   \
-          \     import json as _json\n\n        def _write_jsonl(ds: Dataset, path:\
-          \ str):\n            \"\"\"Write dataset to JSONL, normalizing tool-call\
-          \ message fields.\n\n            The 'messages' column can arrive in different\
-          \ shapes depending on\n            the source dataset's Arrow schema:\n\
-          \            - A list of message dicts (already structured) - the common\
-          \ case.\n            - A list where individual messages are JSON-encoded\
-          \ strings\n              (datasets>=4.8 may type non-uniform message schemas\
-          \ this way).\n            - The entire messages column typed as a single\
-          \ JSON-encoded string\n              representing the whole array (e.g.,\
-          \ some HF datasets store\n              complex nested fields as raw JSON\
-          \ strings).\n            This helper normalizes all of these to a list of\
-          \ dicts and strips\n            None-valued fields added by Arrow schema\
-          \ unification.\n            \"\"\"\n            with open(path, \"w\") as\
-          \ f:\n                for row in ds:\n                    row = dict(row)\n\
-          \                    if dataset_format == \"tool_call\" and \"messages\"\
-          \ in row and row[\"messages\"]:\n                        messages = row[\"\
-          messages\"]\n                        if isinstance(messages, str):\n   \
-          \                         messages = _json.loads(messages)\n           \
-          \             row[\"messages\"] = [\n                            {k: v for\
-          \ k, v in (_json.loads(m) if isinstance(m, str) else m).items() if v is\
-          \ not None}\n                            for m in messages\n           \
-          \             ]\n                    f.write(_json.dumps(row) + \"\\n\"\
-          )\n\n        # Also save to shared PVC for next pipeline step\n        pvc_dataset_dir\
-          \ = os.path.join(pvc_mount_path, \"datasets\")\n        os.makedirs(pvc_dataset_dir,\
-          \ exist_ok=True)\n\n        pvc_train_path = os.path.join(pvc_dataset_dir,\
-          \ \"train.jsonl\")\n        pvc_eval_path = os.path.join(pvc_dataset_dir,\
-          \ \"eval.jsonl\")\n\n        log_message(f\"Saving train dataset to PVC:\
-          \ {pvc_train_path}\")\n        _write_jsonl(train_ds, pvc_train_path)\n\n\
-          \        log_message(f\"Saving eval dataset to PVC: {pvc_eval_path}\")\n\
-          \        _write_jsonl(eval_ds, pvc_eval_path)\n\n        if write_kfp_artifacts:\n\
-          \            log_message(f\"Saving train dataset to {train_dataset.path}\"\
-          )\n            _write_jsonl(train_ds, train_dataset.path)\n\n          \
-          \  log_message(f\"Saving eval dataset to {eval_dataset.path}\")\n      \
-          \      _write_jsonl(eval_ds, eval_dataset.path)\n        else:\n       \
-          \     # Keep KFP output artifacts tiny. The lora-grpo pipeline consumes\n\
-          \            # the stable PVC path directly, so serializing the full dataset\
-          \ a\n            # second time into KFP's node-local artifact scratch is\
-          \ unnecessary.\n            log_message(\"Writing PVC dataset manifests\
-          \ to KFP artifact paths\")\n            for artifact_path, pvc_path, split,\
-          \ count in (\n                (train_dataset.path, pvc_train_path, \"train\"\
-          , len(train_ds)),\n                (eval_dataset.path, pvc_eval_path, \"\
-          eval\", len(eval_ds)),\n            ):\n                with open(artifact_path,\
-          \ \"w\", encoding=\"utf-8\") as artifact_file:\n                    _json.dump(\n\
-          \                        {\n                            \"dataset_uri\"\
-          : dataset_uri,\n                            \"split\": split,\n        \
-          \                    \"num_examples\": count,\n                        \
-          \    \"pvc_path\": pvc_path,\n                        },\n             \
-          \           artifact_file,\n                    )\n\n        # Save metadata\n\
-          \        train_dataset.metadata = {\n            \"dataset_uri\": dataset_uri,\n\
-          \            \"num_examples\": len(train_ds),\n            \"split\": \"\
-          train\",\n            \"train_split_ratio\": train_split_ratio,\n      \
-          \      \"artifact_path\": train_dataset.path,\n            \"pvc_path\"\
-          : pvc_train_path,\n        }\n\n        eval_dataset.metadata = {\n    \
-          \        \"dataset_uri\": dataset_uri,\n            \"num_examples\": len(eval_ds),\n\
-          \            \"split\": \"eval\",\n            \"train_split_ratio\": train_split_ratio,\n\
-          \            \"artifact_path\": eval_dataset.path,\n            \"pvc_path\"\
-          : pvc_eval_path,\n        }\n\n        log_message(\"=\" * 60)\n       \
-          \ log_message(\"Dataset Download Component Completed Successfully\")\n \
-          \       log_message(f\"  Train: {len(train_ds)} examples\")\n        log_message(f\"\
-          \    - KFP Artifact: {train_dataset.path}\")\n        log_message(f\"  \
-          \  - PVC: {pvc_train_path}\")\n        log_message(f\"  Eval: {len(eval_ds)}\
-          \ examples\")\n        log_message(f\"    - KFP Artifact: {eval_dataset.path}\"\
-          )\n        log_message(f\"    - PVC: {pvc_eval_path}\")\n        log_message(\"\
-          =\" * 60)\n\n    except Exception as e:\n        error_msg = f\"ERROR in\
-          \ dataset download: {str(e)}\"\n        log_message(error_msg)\n       \
-          \ raise\n\n"
-        image: quay.io/opendatahub/odh-th06-cpu-torch291-py312:odh-3.4
     exec-grpo-eval:
       container:
         args:
@@ -1186,7 +744,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'model-registry==0.3.4'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'model-registry==0.3.9'\
           \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
           $0\" \"$@\"\n"
@@ -1571,7 +1129,7 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\n__KFP_EMBEDDED_ARCHIVE_B64 = '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'\n\
+          \ *\n\n__KFP_EMBEDDED_ARCHIVE_B64 = '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'\n\
           \nimport base64 as __kfp_b64\nimport io as __kfp_io\nimport os as __kfp_os\n\
           import sys as __kfp_sys\nimport tarfile as __kfp_tarfile\nimport tempfile\
           \ as __kfp_tempfile\n\n# Extract embedded archive at import time to ensure\
@@ -1596,34 +1154,34 @@ deploymentSpec:
           \ str = \"4\",\n    training_resource_gpu_per_worker: int = 1,\n    training_resource_memory_per_worker:\
           \ str = \"64Gi\",\n    training_metadata_labels: str = \"\",\n    training_metadata_annotations:\
           \ str = \"\",\n    training_runtime: str = \"training-hub\",\n    training_pvc_name:\
-          \ str = \"\",\n    kubernetes_config: dsl.TaskConfig = None,\n) -> str:\n\
-          \    \"\"\"Train using LoRA GRPO (Group Relative Policy Optimization).\n\
-          \n    Uses ART backend with co-located vLLM for single-GPU RLVR training.\n\
-          \    Trains LoRA adapters on tool-calling agents, then merges adapters into\
-          \ the\n    base model via PEFT merge_and_unload() for downstream deployment.\n\
-          \n    Training is delegated entirely to Training Hub's built-in lora_grpo()\n\
-          \    algorithm (no custom func is passed to TrainingHubTrainer). This ensures\n\
-          \    the SDK wraps the training call with a `__main__` guard, which is required\n\
-          \    because ART uses `multiprocessing.spawn` internally.\n\n    After the\
-          \ TrainJob completes, this component reads the adapter checkpoints\n   \
-          \ from the shared PVC and merges them into the base model on CPU.\n\n  \
-          \  Args:\n        pvc_path: Workspace PVC root path (use dsl.WORKSPACE_PATH_PLACEHOLDER).\n\
-          \        training_run_id: Unique identifier for this pipeline run. The pipeline\n\
-          \            supplies the KFP run ID so checkpoints from previous runs are\
-          \ not\n            resumed accidentally on a persistent PVC. If empty, a\
-          \ UUID is used.\n        output_model: Output model artifact (merged model).\n\
-          \        output_metrics: Output training metrics artifact.\n        dataset:\
-          \ Input training dataset artifact (tool-call traces).\n        training_base_model:\
-          \ Base model (HuggingFace ID or local path).\n        training_data_path:\
-          \ Dataset path or HuggingFace ID (e.g.,\n            Agent-Ark/Toucan-1.5M).\
-          \ When empty, uses the dataset artifact.\n            When set, overrides\
-          \ the artifact.\n        training_num_iterations: Number of GRPO training\
-          \ iterations.\n        training_group_size: Number of rollouts per prompt\
-          \ for GRPO advantage estimation.\n        training_prompt_batch_size: Number\
-          \ of prompts per training batch.\n        training_n_train: Number of training\
-          \ samples to use from the dataset.\n        training_learning_rate: Learning\
-          \ rate (default: 1e-5).\n        training_gpu_memory_utilization: Fraction\
-          \ of GPU memory for vLLM (rest for training).\n        training_enforce_eager:\
+          \ str = \"\",\n    training_use_hf_direct: bool = False,\n    kubernetes_config:\
+          \ dsl.TaskConfig = None,\n) -> str:\n    \"\"\"Train using LoRA GRPO (Group\
+          \ Relative Policy Optimization).\n\n    Uses ART backend with co-located\
+          \ vLLM for single-GPU RLVR training.\n    Trains LoRA adapters on tool-calling\
+          \ agents, then merges adapters into the\n    base model via PEFT merge_and_unload()\
+          \ for downstream deployment.\n\n    Training is delegated entirely to Training\
+          \ Hub's built-in lora_grpo()\n    algorithm (no custom func is passed to\
+          \ TrainingHubTrainer). This ensures\n    the SDK wraps the training call\
+          \ with a `__main__` guard, which is required\n    because ART uses `multiprocessing.spawn`\
+          \ internally.\n\n    After the TrainJob completes, this component reads\
+          \ the adapter checkpoints\n    from the shared PVC and merges them into\
+          \ the base model on CPU.\n\n    Args:\n        pvc_path: Workspace PVC root\
+          \ path (use dsl.WORKSPACE_PATH_PLACEHOLDER).\n        training_run_id: Unique\
+          \ identifier for this pipeline run. The pipeline\n            supplies the\
+          \ KFP run ID so checkpoints from previous runs are not\n            resumed\
+          \ accidentally on a persistent PVC. If empty, a UUID is used.\n        output_model:\
+          \ Output model artifact (merged model).\n        output_metrics: Output\
+          \ training metrics artifact.\n        dataset: Input training dataset artifact\
+          \ (tool-call traces).\n        training_base_model: Base model (HuggingFace\
+          \ ID or local path).\n        training_data_path: Dataset path or HuggingFace\
+          \ ID (e.g.,\n            Agent-Ark/Toucan-1.5M). When empty, uses the dataset\
+          \ artifact.\n            When set, overrides the artifact.\n        training_num_iterations:\
+          \ Number of GRPO training iterations.\n        training_group_size: Number\
+          \ of rollouts per prompt for GRPO advantage estimation.\n        training_prompt_batch_size:\
+          \ Number of prompts per training batch.\n        training_n_train: Number\
+          \ of training samples to use from the dataset.\n        training_learning_rate:\
+          \ Learning rate (default: 1e-5).\n        training_gpu_memory_utilization:\
+          \ Fraction of GPU memory for vLLM (rest for training).\n        training_enforce_eager:\
           \ Disable torch.compile/CUDAGraphs in vLLM (Qwen3 workaround).\n       \
           \ training_data_config: Dataset config name for HuggingFace datasets (e.g.,\
           \ Qwen3).\n        training_lora_r: LoRA rank (controls adapter capacity).\n\
@@ -1635,17 +1193,21 @@ deploymentSpec:
           \ labels as key=value,key=value.\n        training_metadata_annotations:\
           \ Pod annotations as key=value,key=value.\n        training_runtime: Name\
           \ of the ClusterTrainingRuntime to use.\n        training_pvc_name: PVC\
-          \ name to mount on the TrainJob pod for shared storage.\n        kubernetes_config:\
-          \ KFP TaskConfig for volumes/env/resources passthrough.\n\n    Environment:\n\
-          \        HF_TOKEN: HuggingFace token for gated models (read from environment).\n\
-          \n    Returns:\n        The path to this run's ``training_results.json``\
-          \ on the shared PVC.\n    \"\"\"\n    import glob\n    import os\n    import\
-          \ uuid\n    from typing import Dict\n\n    from data import download_oci_model,\
-          \ prepare_jsonl, resolve_dataset\n    from output import normalize_tokenizer_config,\
-          \ persist_model, preserve_tokenizer_files\n    from setup import configure_env,\
-          \ create_logger, init_k8s, parse_kv, setup_hf_token\n    from training import\
-          \ select_runtime, wait_for_training_job\n\n    log = create_logger(\"train_model\"\
-          )\n    log.info(f\"Initializing LoRA GRPO training component with: pvc={pvc_path},\
+          \ name to mount on the TrainJob pod for shared storage.\n        training_use_hf_direct:\
+          \ Use the Hugging Face dataset loader directly.\n            When true,\
+          \ training_data_path must be an ``hf://`` URI or a Hugging\n           \
+          \ Face repository ID; the dataset materialization task is bypassed.\n  \
+          \      kubernetes_config: KFP TaskConfig for volumes/env/resources passthrough.\n\
+          \n    Environment:\n        HF_TOKEN: HuggingFace token for gated models\
+          \ (read from environment).\n\n    Returns:\n        The path to this run's\
+          \ ``training_results.json`` on the shared PVC.\n    \"\"\"\n    import glob\n\
+          \    import os\n    import uuid\n    from typing import Dict\n\n    from\
+          \ data import download_oci_model, normalize_hf_dataset_uri, prepare_jsonl,\
+          \ resolve_dataset\n    from output import normalize_tokenizer_config, persist_model,\
+          \ preserve_tokenizer_files\n    from setup import configure_env, create_logger,\
+          \ init_k8s, parse_kv, setup_hf_token\n    from training import select_runtime,\
+          \ wait_for_training_job\n\n    log = create_logger(\"train_model\")\n  \
+          \  log.info(f\"Initializing LoRA GRPO training component with: pvc={pvc_path},\
           \ model={training_base_model}\")\n\n    _api = init_k8s(log)\n\n    # Use\
           \ the existing workspace mount as the worker's effective home. This\n  \
           \  # keeps the worker on one PVC mount and avoids image-specific home paths.\n\
@@ -1675,24 +1237,45 @@ deploymentSpec:
           \        # headers or pre-compiled FlashInfer kernels.\n        # Tracking:\
           \ RHOAIENG-95424\n        \"VLLM_USE_FLASHINFER_SAMPLER\": \"0\",\n    }\n\
           \n    merged_env = configure_env(training_envs, default_env, log)\n    setup_hf_token(merged_env,\
-          \ training_base_model, log)\n\n    ds_dir = os.path.join(pvc_path, \"dataset\"\
-          , \"train\")\n    os.makedirs(ds_dir, exist_ok=True)\n\n    # Determine\
-          \ data_path for Training Hub:\n    # 1. Explicit training_data_path (HF\
-          \ id or local path) takes priority\n    # 2. Dataset artifact resolved to\
-          \ local JSONL\n    # 3. Fallback -- Training Hub uses data_config default\n\
-          \    data_path = \"\"\n    if training_data_path:\n        data_path = training_data_path\n\
-          \        log.info(f\"Using explicit data_path: {data_path}\")\n    elif\
-          \ dataset is not None:\n        resolve_dataset(dataset, ds_dir, log)\n\
-          \        jsonl = os.path.join(ds_dir, \"train.jsonl\")\n        prepare_jsonl(ds_dir,\
-          \ jsonl, log)\n        data_path = jsonl if os.path.exists(jsonl) else ds_dir\n\
-          \        log.info(f\"Using dataset artifact, resolved to: {data_path}\"\
-          )\n    else:\n        log.info(\"No dataset provided; Training Hub will\
-          \ use data_config default\")\n\n    resolved = training_base_model\n\n \
-          \   if isinstance(training_base_model, str) and training_base_model.startswith(\"\
-          oci://\"):\n        resolved = download_oci_model(training_base_model, pvc_path,\
-          \ log)\n\n    run_id = training_run_id.strip() or uuid.uuid4().hex\n   \
-          \ ckpt_dir = os.path.join(pvc_path, \"checkpoints\", run_id)\n    os.makedirs(ckpt_dir,\
-          \ exist_ok=True)\n\n    # -- Submit TrainJob ------------------------------------------------\n\
+          \ training_base_model, log)\n\n    grpo_training_completion_timeout_env\
+          \ = \"LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS\"\n    grpo_default_training_completion_timeout_seconds\
+          \ = 7200\n    try:\n        training_completion_timeout_seconds = int(\n\
+          \            os.environ.get(\n                grpo_training_completion_timeout_env,\n\
+          \                str(grpo_default_training_completion_timeout_seconds),\n\
+          \            )\n        )\n    except ValueError as exc:\n        raise\
+          \ ValueError(\n            f\"{grpo_training_completion_timeout_env} must\
+          \ be a positive integer number of seconds\"\n        ) from exc\n    if\
+          \ training_completion_timeout_seconds <= 0:\n        raise ValueError(f\"\
+          {grpo_training_completion_timeout_env} must be a positive integer number\
+          \ of seconds\")\n    log.info(\"TrainJob completion wait timeout configured\
+          \ to %s seconds\", training_completion_timeout_seconds)\n\n    ds_dir =\
+          \ os.path.join(pvc_path, \"dataset\", \"train\")\n    os.makedirs(ds_dir,\
+          \ exist_ok=True)\n\n    # Determine data_path for Training Hub:\n    # 1.\
+          \ Explicit training_data_path (HF id or local path) takes priority\n   \
+          \ # 2. Dataset artifact resolved to local JSONL\n    # 3. Fallback -- Training\
+          \ Hub uses data_config default\n    data_path = \"\"\n    if training_data_path:\n\
+          \        data_path = training_data_path\n        if training_use_hf_direct:\n\
+          \            if data_path.startswith((\"s3://\", \"http://\", \"https://\"\
+          , \"pvc://\")) or data_path.endswith(\n                (\".json\", \".jsonl\"\
+          )\n            ):\n                raise ValueError(\n                 \
+          \   f\"training_use_hf_direct requires a Hugging Face repository ID or hf://\
+          \ URI, not {data_path!r}\"\n                )\n            data_path, training_data_config\
+          \ = normalize_hf_dataset_uri(data_path, training_data_config)\n        \
+          \    log.info(\n                \"Using Training Hub Hugging Face loader:\
+          \ data_path=%s, data_config=%s\",\n                data_path,\n        \
+          \        training_data_config,\n            )\n        log.info(f\"Using\
+          \ explicit data_path: {data_path}\")\n    elif dataset is not None:\n  \
+          \      resolve_dataset(dataset, ds_dir, log)\n        jsonl = os.path.join(ds_dir,\
+          \ \"train.jsonl\")\n        prepare_jsonl(ds_dir, jsonl, log)\n        data_path\
+          \ = jsonl if os.path.exists(jsonl) else ds_dir\n        log.info(f\"Using\
+          \ dataset artifact, resolved to: {data_path}\")\n    else:\n        log.info(\"\
+          No dataset provided; Training Hub will use data_config default\")\n\n  \
+          \  resolved = training_base_model\n\n    if isinstance(training_base_model,\
+          \ str) and training_base_model.startswith(\"oci://\"):\n        resolved\
+          \ = download_oci_model(training_base_model, pvc_path, log)\n\n    run_id\
+          \ = training_run_id.strip() or uuid.uuid4().hex\n    ckpt_dir = os.path.join(pvc_path,\
+          \ \"checkpoints\", run_id)\n    os.makedirs(ckpt_dir, exist_ok=True)\n\n\
+          \    # -- Submit TrainJob ------------------------------------------------\n\
           \    # We do NOT pass func= to TrainingHubTrainer. This lets the SDK use\n\
           \    # its built-in lora_grpo() entry-point which is wrapped in an\n   \
           \ # if __name__ == '__main__' guard -- required because ART internally\n\
@@ -1788,8 +1371,9 @@ deploymentSpec:
           \      func_args=params,\n                packages_to_install=[],\n    \
           \            env=trainer_env,\n                resources_per_node=resources,\n\
           \            ),\n            options=options,\n            runtime=runtime,\n\
-          \        )\n        log.info(f\"Job: {job}\")\n        wait_for_training_job(client,\
-          \ job, log)\n    except Exception as e:\n        log.exception(f\"Training\
+          \        )\n        log.info(f\"Job: {job}\")\n        wait_for_training_job(\n\
+          \            client,\n            job,\n            log,\n            completion_timeout_seconds=training_completion_timeout_seconds,\n\
+          \        )\n    except Exception as e:\n        log.exception(f\"Training\
           \ failed: {e}\")\n        raise\n\n    # -- Post-training: locate adapter\
           \ checkpoint ------------------------\n    adapter_dirs = sorted(\n    \
           \    glob.glob(os.path.join(ckpt_dir, \".art\", \"*\", \"models\", \"*\"\
@@ -1906,32 +1490,6 @@ root:
         triggerPolicy:
           condition: inputs.parameter_values['pipelinechannel--grpo-eval-promotion_passed']
             == true
-      dataset-download:
-        cachingOptions: {}
-        componentRef:
-          name: comp-dataset-download
-        inputs:
-          parameters:
-            dataset_format:
-              runtimeValue:
-                constant: tool_call
-            dataset_uri:
-              componentInputParameter: phase_01_dataset_man_data_uri
-            pvc_mount_path:
-              runtimeValue:
-                constant: /mnt/pipeline
-            shared_log_file:
-              runtimeValue:
-                constant: pipeline_log.txt
-            subset_count:
-              componentInputParameter: phase_01_dataset_opt_subset
-            train_split_ratio:
-              componentInputParameter: phase_01_dataset_man_data_split
-            write_kfp_artifacts:
-              runtimeValue:
-                constant: false
-        taskInfo:
-          name: dataset-download
       grpo-eval:
         cachingOptions: {}
         componentRef:
@@ -1950,8 +1508,6 @@ root:
         cachingOptions: {}
         componentRef:
           name: comp-train-model
-        dependentTasks:
-        - dataset-download
         inputs:
           parameters:
             pvc_path:
@@ -1962,8 +1518,7 @@ root:
             training_data_config:
               componentInputParameter: phase_02_train_opt_data_config
             training_data_path:
-              runtimeValue:
-                constant: /mnt/pipeline/datasets/train.jsonl
+              componentInputParameter: phase_01_dataset_man_data_uri
             training_enforce_eager:
               componentInputParameter: phase_02_train_opt_enforce_eager
             training_envs:
@@ -2001,6 +1556,9 @@ root:
                 constant: '{{$.pipeline_job_uuid}}'
             training_runtime:
               componentInputParameter: phase_02_train_opt_runtime
+            training_use_hf_direct:
+              runtimeValue:
+                constant: true
         taskInfo:
           name: train-model
   inputDefinitions:
@@ -2016,39 +1574,21 @@ root:
 
           (not a path). Example: ``grpo-pipeline-pvc``'
         parameterType: STRING
-      phase_01_dataset_man_data_split:
-        defaultValue: 1.0
-        description: 'Fraction of the dataset used for
-
-          training (remainder becomes eval). Default 1.0 uses all rows, which
-
-          is correct for GRPO - improvement is measured from rollout rewards,
-
-          not a held-out eval set.'
-        isOptional: true
-        parameterType: NUMBER_DOUBLE
       phase_01_dataset_man_data_uri:
         defaultValue: hf://Agent-Ark/Toucan-1.5M:Qwen3
-        description: "URI of the dataset. Defaults to\n``hf://Agent-Ark/Toucan-1.5M:Qwen3``\
-          \ (a public tool-calling dataset\nused as a reference example) - override\
-          \ with your own dataset URI.\nSupported schemes:\n- HuggingFace: ``hf://org/dataset``\
-          \ or ``hf://org/dataset:config``\n  Some datasets have multiple subsets\
-          \ (configs). If the dataset has\n  more than one config, you must append\
-          \ ``:config`` - otherwise\n  ``load_dataset`` will fail asking you to choose.\
-          \ Single-config\n  datasets do not need it.\n  Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3``\n\
-          - S3: ``s3://bucket/path/to/file.jsonl``\n- HTTP: ``https://host/file.jsonl``\
-          \ (must point to a raw file,\n  not an HTML page)\n- PVC file: ``pvc://path/to/file.jsonl``"
+        description: 'Hugging Face dataset URI. Defaults to
+
+          ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset
+
+          used as a reference example). Use ``hf://org/dataset`` or
+
+          ``hf://org/dataset:config``. The ``hf://`` prefix is optional when
+
+          supplying a Hugging Face repository ID. Some datasets have multiple
+
+          configs; append ``:config`` or set ``phase_02_train_opt_data_config``.'
         isOptional: true
         parameterType: STRING
-      phase_01_dataset_opt_subset:
-        defaultValue: 0.0
-        description: 'Download and use only this many rows
-
-          (random sample). Set to 0 for all rows. Use a small number for
-
-          quick pipeline smoke-tests. Example: ``500``'
-        isOptional: true
-        parameterType: NUMBER_INTEGER
       phase_02_train_man_group_size:
         defaultValue: 4.0
         description: 'Rollouts generated per prompt to estimate
@@ -2211,7 +1751,7 @@ root:
         defaultValue: 200.0
         description: 'Maximum rows ART draws from the dataset
 
-          per run. Independent of ``phase_01_dataset_opt_subset``.
+          per run. This is independent of the total dataset size.
 
           Example: ``200`` for quick tests, ``2000`` for a fuller run.'
         isOptional: true
@@ -2368,32 +1908,6 @@ platforms:
   kubernetes:
     deploymentSpec:
       executors:
-        exec-dataset-download:
-          imagePullPolicy: IfNotPresent
-          pvcMount:
-          - componentInputParameter: phase_00_infra_man_pvc_name
-            mountPath: /mnt/pipeline
-            pvcNameParameter:
-              componentInputParameter: phase_00_infra_man_pvc_name
-          secretAsEnv:
-          - keyToEnv:
-            - envVar: AWS_ACCESS_KEY_ID
-              secretKey: AWS_ACCESS_KEY_ID
-            - envVar: AWS_SECRET_ACCESS_KEY
-              secretKey: AWS_SECRET_ACCESS_KEY
-            optional: true
-            secretName: s3-secret
-            secretNameParameter:
-              runtimeValue:
-                constant: s3-secret
-          - keyToEnv:
-            - envVar: HF_TOKEN
-              secretKey: HF_TOKEN
-            optional: true
-            secretName: hf-token
-            secretNameParameter:
-              runtimeValue:
-                constant: hf-token
         exec-grpo-eval:
           imagePullPolicy: IfNotPresent
           pvcMount:

@@ -6,7 +6,7 @@
 
 LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
-A 5-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, evaluates training results, and conditionally registers and deploys the model only if training shows improvement.
+A 4-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, evaluates training results, and conditionally registers and deploys the model only if training shows improvement.
 
 Prerequisites: - A ReadWriteMany PVC (e.g., NFS-backed) for model storage and serving. Create with: ``oc create pvc <name> --access-mode=ReadWriteMany --storage-class=nfs-csi --size=50Gi`` - ``kubernetes-credentials`` secret with KUBERNETES_SERVER_URL and KUBERNETES_AUTH_TOKEN (required for TrainJob
 creation). - ``hf-token`` secret (optional, for gated HuggingFace models/datasets). - Model Registry RoleBinding for the pipeline ServiceAccount (required for stage 4). - Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
@@ -18,8 +18,7 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the ReadWriteMany PVC used for training checkpoints and model serving. To create one: in RHOAI open your Data Science Project -> Cluster Storage -> Create storage, select ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name (not a path). Example: ``grpo-pipeline-pvc`` |
 | `phase_04_registry_man_address` | `str` | `None` | Hostname or IP address of the Model Registry service (required). Pass only the host or IP, without ``http://``, ``https://``, or the ``/api/model_registry/v1alpha3`` path. |
 | `phase_05_deploy_man_namespace` | `str` | `None` | OpenShift project where the KServe InferenceService will be created. Must be the same namespace where your PVC is provisioned. Should have KServe enabled - typically your Data Science Project. Example: ``my-ds-project`` |
-| `phase_01_dataset_man_data_uri` | `str` | `hf://Agent-Ark/Toucan-1.5M:Qwen3` | URI of the dataset. Defaults to ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset used as a reference example) - override with your own dataset URI. Supported schemes: - HuggingFace: ``hf://org/dataset`` or ``hf://org/dataset:config``   Some datasets have multiple subsets (configs). If the dataset has   more than one config, you must append ``:config`` - otherwise   ``load_dataset`` will fail asking you to choose. Single-config   datasets do not need it.   Example: ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` - S3: ``s3://bucket/path/to/file.jsonl`` - HTTP: ``https://host/file.jsonl`` (must point to a raw file,   not an HTML page) - PVC file: ``pvc://path/to/file.jsonl`` |
-| `phase_01_dataset_man_data_split` | `float` | `1.0` | Fraction of the dataset used for training (remainder becomes eval). Default 1.0 uses all rows, which is correct for GRPO - improvement is measured from rollout rewards, not a held-out eval set. |
+| `phase_01_dataset_man_data_uri` | `str` | `hf://Agent-Ark/Toucan-1.5M:Qwen3` | Hugging Face dataset URI. Defaults to ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset used as a reference example). Use ``hf://org/dataset`` or ``hf://org/dataset:config``. The ``hf://`` prefix is optional when supplying a Hugging Face repository ID. Some datasets have multiple configs; append ``:config`` or set ``phase_02_train_opt_data_config``. |
 | `phase_02_train_man_model` | `str` | `Qwen/Qwen3-4B` | HuggingFace model ID of the base model to fine-tune. If the model is gated, configure the ``hf-token`` secret. Example: ``Qwen/Qwen3-4B`` or ``ibm-granite/granite-3.3-8b-instruct`` |
 | `phase_02_train_man_num_iterations` | `int` | `50` | Number of GRPO policy-gradient update steps. Each iteration generates ``group_size`` rollouts per prompt and updates the LoRA adapter. The promotion gate (stage 3) requires ``final_reward > initial_reward`` - fewer than 30 iterations rarely pass it. Default 50 runs in ~1-2 hours on one A100 80GB with Qwen3-4B. Use 100+ for a production-quality training run. |
 | `phase_02_train_man_group_size` | `int` | `4` | Rollouts generated per prompt to estimate relative reward advantage. Higher = better gradient signal but more memory and time. Default 4 is suitable for single-GPU runs. |
@@ -28,9 +27,8 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_02_train_man_lora_alpha` | `int` | `16` | LoRA scaling factor. Effective weight scale = ``lora_alpha / lora_r``. Set equal to ``lora_r`` for neutral scaling (recommended). Example: ``16`` |
 | `phase_04_registry_man_name` | `str` | `grpo-model` | Name to register the model under. Must be unique within your Model Registry. Example: ``qwen3-grpo-tool-call`` |
 | `phase_04_registry_man_version` | `str` | `1.0.0` | Version tag for this model revision. Use semantic versioning. Example: ``1.0.0`` |
-| `phase_01_dataset_opt_subset` | `int` | `0` | Download and use only this many rows (random sample). Set to 0 for all rows. Use a small number for quick pipeline smoke-tests. Example: ``500`` |
 | `phase_02_train_opt_data_config` | `str` | `Qwen3` | HuggingFace dataset config (split or subset name). Only needed for multi-config datasets. Defaults to ``Qwen3`` to match the default dataset (``hf://Agent-Ark/Toucan-1.5M:Qwen3``). If you override ``phase_01_dataset_man_data_uri`` with a single-config dataset, set this to an empty string. |
-| `phase_02_train_opt_n_train` | `int` | `200` | Maximum rows ART draws from the dataset per run. Independent of ``phase_01_dataset_opt_subset``. Example: ``200`` for quick tests, ``2000`` for a fuller run. |
+| `phase_02_train_opt_n_train` | `int` | `200` | Maximum rows ART draws from the dataset per run. This is independent of the total dataset size. Example: ``200`` for quick tests, ``2000`` for a fuller run. |
 | `phase_02_train_opt_learning_rate` | `float` | `1e-05` | AdamW learning rate for LoRA adapter updates. ``1e-5`` is a safe default; increase to ``5e-5`` if reward improvement is too slow. |
 | `phase_02_train_opt_gpu_memory_utilization` | `float` | `0.45` | Fraction of GPU VRAM given to the vLLM rollout engine (remainder goes to the policy model and optimizer). Default 0.45 is tuned for Qwen3-4B on a 80GB A100. Reduce to 0.35 if you see OOM during rollout generation. |
 | `phase_02_train_opt_enforce_eager` | `bool` | `True` | Disables torch.compile and CUDA graph capture in vLLM. Must be True for Qwen3 models (known CUDAGraph incompatibility). Set False for other models for faster rollouts. |
@@ -101,11 +99,26 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 
 ## Storage behavior
 
-The dataset download task stores Hugging Face caches under
-``/mnt/pipeline/.cache/huggingface`` and writes the prepared datasets to
-``/mnt/pipeline/datasets`` on the configured PVC. The training task consumes
-the PVC dataset path directly; it does not transfer a full dataset through a
-node-local KFP artifact directory.
+Training Hub loads the Hugging Face dataset directly in the training task. Its
+Hugging Face, vLLM, Triton, TorchInductor, and temporary-file caches are
+redirected to the mounted PVC under ``/mnt/pipeline/.cache`` and ``/mnt/pipeline/.tmp``.
+The pipeline does not create a separate dataset-download task or copy a full
+dataset through a node-local KFP artifact directory.
+
+The dataset URI must be a Hugging Face repository ID or ``hf://`` URI. For a
+dataset with multiple configs, include the config in the URI, for example
+``hf://Agent-Ark/Toucan-1.5M:Qwen3``, or set
+``phase_02_train_opt_data_config`` separately. ``phase_02_train_opt_n_train``
+controls how many examples ART draws for training.
+
+## Training wait timeout
+
+The shared training helper keeps its existing 30-minute default for other
+training components. GRPO uses an internal two-hour completion wait without
+adding another pipeline input. For an unusually long GRPO run, override it
+through the existing ``phase_02_train_opt_env_vars`` input:
+
+``LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS=21600``
 
 ## Model Registry setup
 
