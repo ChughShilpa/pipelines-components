@@ -6,7 +6,8 @@
 
 LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
-A 4-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, evaluates training results, and conditionally registers and deploys the model only if training shows improvement.
+A 4-stage pipeline that trains a language model using LoRA GRPO (Group Relative Policy Optimization) for tool-calling tasks, loads the dataset directly through Training Hub's Hugging Face loader, evaluates training results, and conditionally registers and deploys the model only if training shows
+improvement.
 
 Prerequisites: - A ReadWriteMany PVC (e.g., NFS-backed) for model storage and serving. Create with: ``oc create pvc <name> --access-mode=ReadWriteMany --storage-class=nfs-csi --size=50Gi`` - ``kubernetes-credentials`` secret with KUBERNETES_SERVER_URL and KUBERNETES_AUTH_TOKEN (required for TrainJob
 creation). - ``hf-token`` secret (optional, for gated HuggingFace models/datasets). - Model Registry RoleBinding for the pipeline ServiceAccount (required for stage 4). - Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
@@ -18,7 +19,7 @@ creation). - ``hf-token`` secret (optional, for gated HuggingFace models/dataset
 | `phase_00_infra_man_pvc_name` | `str` | `None` | Name of the ReadWriteMany PVC used for training checkpoints and model serving. To create one: in RHOAI open your Data Science Project -> Cluster Storage -> Create storage, select ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name (not a path). Example: ``grpo-pipeline-pvc`` |
 | `phase_04_registry_man_address` | `str` | `None` | Hostname or IP address of the Model Registry service (required). Pass only the host or IP, without ``http://``, ``https://``, or the ``/api/model_registry/v1alpha3`` path. |
 | `phase_05_deploy_man_namespace` | `str` | `None` | OpenShift project where the KServe InferenceService will be created. Must be the same namespace where your PVC is provisioned. Should have KServe enabled - typically your Data Science Project. Example: ``my-ds-project`` |
-| `phase_01_dataset_man_data_uri` | `str` | `hf://Agent-Ark/Toucan-1.5M:Qwen3` | Hugging Face dataset URI. Defaults to ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset used as a reference example). Use ``hf://org/dataset`` or ``hf://org/dataset:config``. The ``hf://`` prefix is optional when supplying a Hugging Face repository ID. Some datasets have multiple configs; append ``:config`` or set ``phase_02_train_opt_data_config``. |
+| `phase_01_dataset_man_data_uri` | `str` | `hf://Agent-Ark/Toucan-1.5M:Qwen3` | Hugging Face dataset URI only. This pipeline bypasses dataset materialization and passes the value directly to Training Hub. Defaults to ``hf://Agent-Ark/Toucan-1.5M:Qwen3``. Use ``hf://org/dataset`` or ``hf://org/dataset:config``; the ``hf://`` prefix is optional when supplying a Hugging Face repository ID. Local JSON/JSONL, PVC, S3, and HTTP dataset paths are not supported by this pipeline. Each row must contain ``question``, ``available_tools`` (OpenAI function-tool definitions), and ``messages`` whose first three messages are system, user, and assistant-with-tool-call. The assistant tool call must provide a non-empty function name and JSON-encoded arguments. See the Training Hub loader format: https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py#L381-L387 For datasets with multiple configs, append ``:config`` or set ``phase_02_train_opt_data_config``. |
 | `phase_02_train_man_model` | `str` | `Qwen/Qwen3-4B` | HuggingFace model ID of the base model to fine-tune. If the model is gated, configure the ``hf-token`` secret. Example: ``Qwen/Qwen3-4B`` or ``ibm-granite/granite-3.3-8b-instruct`` |
 | `phase_02_train_man_num_iterations` | `int` | `50` | Number of GRPO policy-gradient update steps. Each iteration generates ``group_size`` rollouts per prompt and updates the LoRA adapter. The promotion gate (stage 3) requires ``final_reward > initial_reward`` - fewer than 30 iterations rarely pass it. Default 50 runs in ~1-2 hours on one A100 80GB with Qwen3-4B. Use 100+ for a production-quality training run. |
 | `phase_02_train_man_group_size` | `int` | `4` | Rollouts generated per prompt to estimate relative reward advantage. Higher = better gradient signal but more memory and time. Default 4 is suitable for single-GPU runs. |
@@ -156,3 +157,53 @@ oc auth can-i get service/${REGISTRY_NAME} \
 ```
 
 The result must be ``yes``. Pass the selected registry Service host or IP in ``phase_04_registry_man_address`` and set ``phase_04_registry_opt_port`` to its configured port. Do not paste the dashboard URL path ``/api/model_registry/v1alpha3``. Use a unique model name and version for each registration, then set ``phase_05_deploy_man_namespace`` to the namespace containing the user PVC.
+
+<!-- custom-content -->
+
+## Dataset format
+
+This pipeline supports Hugging Face datasets only. The value of
+``phase_01_dataset_man_data_uri`` is passed directly to Training Hub; local
+JSON/JSONL files, PVC paths, S3 paths, and HTTP URLs are not supported. Use
+``hf://org/dataset`` or ``hf://org/dataset:config``. The ``hf://`` prefix is
+optional when supplying a Hugging Face repository ID.
+
+For the built-in single-turn tool-call mode, each row must contain
+``question``, ``available_tools``, and ``messages``. The first three messages
+must be a system message, a user message, and an assistant message containing
+a tool call. Tool definitions must use the OpenAI function-tool format, and
+the assistant tool call must provide a non-empty function name and
+JSON-encoded arguments. For example:
+
+```json
+{
+  "question": "Look up the value.",
+  "available_tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_value",
+        "description": "Look up a value.",
+        "parameters": {"type": "object", "properties": {}}
+      }
+    }
+  ],
+  "messages": [
+    {"role": "system", "content": "You are a tool-calling assistant."},
+    {"role": "user", "content": "Look up the value."},
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_123",
+          "type": "function",
+          "function": {"name": "lookup_value", "arguments": "{}"}
+        }
+      ]
+    }
+  ]
+}
+```
+
+See the [Training Hub loader format](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py#L381-L387).

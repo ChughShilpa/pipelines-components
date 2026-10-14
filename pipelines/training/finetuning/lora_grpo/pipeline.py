@@ -29,8 +29,9 @@ from components.training.finetuning.lora_grpo import train_model
 PVC_MOUNT_PATH = "/mnt/pipeline"
 PIPELINE_NAME = "lora-grpo-pipeline"
 
-# This pipeline pins its registry SDK independently. The shared component keeps
-# its existing dependency for other pipelines that consume it.
+# Temporary workaround: pin the registry SDK for this pipeline until the shared
+# Model Registry component is updated to model-registry==0.3.9. Remove this
+# override once that shared component carries the updated dependency.
 GRPO_MODEL_REGISTRY = dsl.component(
     base_image="quay.io/opendatahub/odh-th06-cpu-torch291-py312:odh-3.4",
     packages_to_install=["model-registry==0.3.9"],
@@ -99,9 +100,10 @@ def lora_grpo_pipeline(
     """LoRA GRPO Training Pipeline - RLVR fine-tuning with promotion gating.
 
     A 4-stage pipeline that trains a language model using LoRA GRPO
-    (Group Relative Policy Optimization) for tool-calling tasks, evaluates
-    training results, and conditionally registers and deploys the model
-    only if training shows improvement.
+    (Group Relative Policy Optimization) for tool-calling tasks, loads the
+    dataset directly through Training Hub's Hugging Face loader, evaluates
+    training results, and conditionally registers and deploys the model only
+    if training shows improvement.
 
     Prerequisites:
         - A ReadWriteMany PVC (e.g., NFS-backed) for model storage and serving.
@@ -120,12 +122,21 @@ def lora_grpo_pipeline(
             your Data Science Project -> Cluster Storage -> Create storage, select
             ReadWriteMany access mode, minimum 50Gi. Enter only the PVC name
             (not a path). Example: ``grpo-pipeline-pvc``
-        phase_01_dataset_man_data_uri: Hugging Face dataset URI. Defaults to
-            ``hf://Agent-Ark/Toucan-1.5M:Qwen3`` (a public tool-calling dataset
-            used as a reference example). Use ``hf://org/dataset`` or
-            ``hf://org/dataset:config``. The ``hf://`` prefix is optional when
-            supplying a Hugging Face repository ID. Some datasets have multiple
-            configs; append ``:config`` or set ``phase_02_train_opt_data_config``.
+        phase_01_dataset_man_data_uri: Hugging Face dataset URI only. This
+            pipeline bypasses dataset materialization and passes the value
+            directly to Training Hub. Defaults to
+            ``hf://Agent-Ark/Toucan-1.5M:Qwen3``. Use ``hf://org/dataset`` or
+            ``hf://org/dataset:config``; the ``hf://`` prefix is optional when
+            supplying a Hugging Face repository ID. Local JSON/JSONL, PVC, S3,
+            and HTTP dataset paths are not supported by this pipeline. Each
+            row must contain ``question``, ``available_tools`` (OpenAI
+            function-tool definitions), and ``messages`` whose first three
+            messages are system, user, and assistant-with-tool-call. The
+            assistant tool call must provide a non-empty function name and
+            JSON-encoded arguments. See the Training Hub loader format:
+            https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py#L381-L387
+            For datasets with multiple configs, append ``:config`` or set
+            ``phase_02_train_opt_data_config``.
         phase_05_deploy_man_namespace: OpenShift project where the KServe
             InferenceService will be created. Must be the same namespace where
             your PVC is provisioned. Should have
