@@ -1,0 +1,388 @@
+# PIPELINE DEFINITION
+# Name: prepare-grpo-dataset
+# Description: Resolve any supported source for Training Hub's GRPO loader.
+#              Hugging Face references are returned without downloading or rewriting them.
+#              Local/PVC JSON or JSONL files, S3 JSON/JSONL objects, and HTTP(S) JSON/JSONL
+#              resources are converted to Training Hub's local canonical format on the
+#              shared PVC. The component intentionally does not subset, split, or sample the
+#              data; Training Hub owns ``n_train`` and ``n_val``.
+#
+#              Private S3 sources use ``AWS_ACCESS_KEY_ID`` and
+#              ``AWS_SECRET_ACCESS_KEY``. ``AWS_S3_ENDPOINT`` and
+#              ``AWS_DEFAULT_REGION`` are optional for S3-compatible services.
+#
+#              See the Training Hub GRPO loader contract:
+#              https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py
+#
+#              The local canonical single-turn format is ``question``, ``tools``,
+#              ``target_tool_name``, ``target_arguments``, and an optional
+#              ``system_prompt``. Multi-turn rows retain ``messages`` and are normalized
+#              to modern OpenAI ``tool_calls``/``tool`` messages so Training Hub can
+#              decompose them.
+# Inputs:
+#    dataset_config: str [Default: '']
+#    dataset_uri: str
+#    pvc_mount_path: str
+# Outputs:
+#    resolved_data_config: str
+#    resolved_data_path: str
+#    use_hf_direct: bool
+components:
+  comp-prepare-grpo-dataset:
+    executorLabel: exec-prepare-grpo-dataset
+    inputDefinitions:
+      parameters:
+        dataset_config:
+          defaultValue: ''
+          description: 'Optional Hugging Face dataset configuration. An inline
+
+            ``:config`` suffix on an HF URI takes precedence.'
+          isOptional: true
+          parameterType: STRING
+        dataset_uri:
+          description: 'Hugging Face URI/repository ID, ``s3://`` object,
+
+            ``http://`` or ``https://`` JSON/JSONL URL, ``pvc://`` path, or
+
+            local JSON/JSONL path visible in the component container.'
+          parameterType: STRING
+        pvc_mount_path:
+          description: 'Mount point of the shared PVC used for caches and
+
+            normalized local data.'
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        resolved_data_config:
+          parameterType: STRING
+        resolved_data_path:
+          parameterType: STRING
+        use_hf_direct:
+          parameterType: BOOLEAN
+deploymentSpec:
+  executors:
+    exec-prepare-grpo-dataset:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - prepare_grpo_dataset
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'datasets>=2.14.0'\
+          \ 's3fs>=2023.1.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef prepare_grpo_dataset(\n    dataset_uri: str,\n    pvc_mount_path:\
+          \ str,\n    dataset_config: str = \"\",\n) -> NamedTuple(\n    \"PrepareDatasetOutputs\"\
+          ,\n    [\n        (\"resolved_data_path\", str),\n        (\"resolved_data_config\"\
+          , str),\n        (\"use_hf_direct\", bool),\n    ],\n):\n    \"\"\"Resolve\
+          \ any supported source for Training Hub's GRPO loader.\n\n    Hugging Face\
+          \ references are returned without downloading or rewriting them.\n    Local/PVC\
+          \ JSON or JSONL files, S3 JSON/JSONL objects, and HTTP(S) JSON/JSONL\n \
+          \   resources are converted to Training Hub's local canonical format on\
+          \ the\n    shared PVC. The component intentionally does not subset, split,\
+          \ or sample the\n    data; Training Hub owns ``n_train`` and ``n_val``.\n\
+          \n    Private S3 sources use ``AWS_ACCESS_KEY_ID`` and\n    ``AWS_SECRET_ACCESS_KEY``.\
+          \ ``AWS_S3_ENDPOINT`` and\n    ``AWS_DEFAULT_REGION`` are optional for S3-compatible\
+          \ services.\n\n    See the Training Hub GRPO loader contract:\n    https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py\n\
+          \n    The local canonical single-turn format is ``question``, ``tools``,\n\
+          \    ``target_tool_name``, ``target_arguments``, and an optional\n    ``system_prompt``.\
+          \ Multi-turn rows retain ``messages`` and are normalized\n    to modern\
+          \ OpenAI ``tool_calls``/``tool`` messages so Training Hub can\n    decompose\
+          \ them.\n\n    Args:\n        dataset_uri: Hugging Face URI/repository ID,\
+          \ ``s3://`` object,\n            ``http://`` or ``https://`` JSON/JSONL\
+          \ URL, ``pvc://`` path, or\n            local JSON/JSONL path visible in\
+          \ the component container.\n        pvc_mount_path: Mount point of the shared\
+          \ PVC used for caches and\n            normalized local data.\n        dataset_config:\
+          \ Optional Hugging Face dataset configuration. An inline\n            ``:config``\
+          \ suffix on an HF URI takes precedence.\n\n    Returns:\n        A Training\
+          \ Hub data path, config, and flag indicating whether the path\n        should\
+          \ be passed through the direct Hugging Face loader.\n    \"\"\"\n    import\
+          \ hashlib\n    import json\n    import os\n    import shutil\n    import\
+          \ urllib.parse\n    import urllib.request\n    from pathlib import Path\n\
+          \n    from datasets import load_dataset\n\n    def _parse_json_value(value,\
+          \ field_name):\n        if isinstance(value, str):\n            try:\n \
+          \               return json.loads(value)\n            except json.JSONDecodeError\
+          \ as exc:\n                raise ValueError(f\"{field_name} must contain\
+          \ valid JSON\") from exc\n        return value\n\n    def _normalise_tools(value):\n\
+          \        tools = _parse_json_value(value, \"tools\")\n        if isinstance(tools,\
+          \ dict):\n            tools = [tools]\n        if not isinstance(tools,\
+          \ list) or not tools:\n            raise ValueError(\"tools must be a non-empty\
+          \ list\")\n\n        normalized = []\n        for tool in tools:\n     \
+          \       if not isinstance(tool, dict):\n                raise ValueError(\"\
+          each tool must be an object\")\n            if \"function\" in tool:\n \
+          \               function = tool[\"function\"]\n                if not isinstance(function,\
+          \ dict):\n                    raise ValueError(\"tool.function must be an\
+          \ object\")\n                normalized_tool = dict(tool)\n            \
+          \    normalized_tool.setdefault(\"type\", \"function\")\n            else:\n\
+          \                # Accept a bare function definition and emit the OpenAI\
+          \ tool\n                # envelope required by the rollout API.\n      \
+          \          function = dict(tool)\n                normalized_tool = {\"\
+          type\": \"function\", \"function\": function}\n            name = normalized_tool.get(\"\
+          function\", {}).get(\"name\")\n            if not isinstance(name, str)\
+          \ or not name.strip():\n                raise ValueError(\"tool function\
+          \ name must be a non-empty string\")\n            normalized.append(normalized_tool)\n\
+          \        return normalized\n\n    def _message_tool_call(message):\n   \
+          \     if not isinstance(message, dict) or message.get(\"role\") != \"assistant\"\
+          :\n            return None\n        if isinstance(message.get(\"function_call\"\
+          ), dict):\n            function_call = message[\"function_call\"]\n    \
+          \        return {\n                \"name\": function_call.get(\"name\"\
+          , \"\"),\n                \"arguments\": function_call.get(\"arguments\"\
+          , \"{}\"),\n            }\n        tool_calls = message.get(\"tool_calls\"\
+          ) or []\n        if not isinstance(tool_calls, list) or not tool_calls:\n\
+          \            return None\n        call = tool_calls[0]\n        if not isinstance(call,\
+          \ dict):\n            return None\n        function = call.get(\"function\"\
+          ) or {}\n        return {\n            \"name\": function.get(\"name\",\
+          \ \"\"),\n            \"arguments\": function.get(\"arguments\", \"{}\"\
+          ),\n        }\n\n    def _normalise_messages(messages, row_index):\n   \
+          \     messages = _parse_json_value(messages, \"messages\")\n        if not\
+          \ isinstance(messages, list):\n            raise ValueError(\"messages must\
+          \ be a list\")\n\n        normalized = []\n        last_tool_call_id = None\n\
+          \        for message_index, original in enumerate(messages):\n         \
+          \   if not isinstance(original, dict):\n                raise ValueError(f\"\
+          messages[{message_index}] must be an object\")\n            message = dict(original)\n\
+          \            role = message.get(\"role\")\n            if role == \"assistant\"\
+          \ and isinstance(message.get(\"function_call\"), dict):\n              \
+          \  function_call = message.pop(\"function_call\")\n                tool_call_id\
+          \ = f\"call_{row_index}_{message_index}\"\n                arguments = function_call.get(\"\
+          arguments\", \"{}\")\n                if not isinstance(arguments, str):\n\
+          \                    arguments = json.dumps(arguments, separators=(\",\"\
+          , \":\"))\n                message[\"tool_calls\"] = [\n               \
+          \     {\n                        \"id\": tool_call_id,\n               \
+          \         \"type\": \"function\",\n                        \"function\"\
+          : {\n                            \"name\": function_call.get(\"name\", \"\
+          \"),\n                            \"arguments\": arguments,\n          \
+          \              },\n                    }\n                ]\n          \
+          \      last_tool_call_id = tool_call_id\n            elif role == \"assistant\"\
+          \ and message.get(\"tool_calls\"):\n                tool_calls = []\n  \
+          \              for call_index, original_call in enumerate(message[\"tool_calls\"\
+          ]):\n                    call = dict(original_call)\n                  \
+          \  function = dict(call.get(\"function\") or {})\n                    call.setdefault(\"\
+          id\", f\"call_{row_index}_{message_index}_{call_index}\")\n            \
+          \        call.setdefault(\"type\", \"function\")\n                    arguments\
+          \ = function.get(\"arguments\", \"{}\")\n                    if not isinstance(arguments,\
+          \ str):\n                        arguments = json.dumps(arguments, separators=(\"\
+          ,\", \":\"))\n                    function[\"arguments\"] = arguments\n\
+          \                    call[\"function\"] = function\n                   \
+          \ tool_calls.append(call)\n                    last_tool_call_id = call[\"\
+          id\"]\n                message[\"tool_calls\"] = tool_calls\n          \
+          \  elif role == \"function\":\n                message[\"role\"] = \"tool\"\
+          \n                message.setdefault(\"tool_call_id\", last_tool_call_id\
+          \ or f\"call_{row_index}\")\n                message.setdefault(\"content\"\
+          , \"\")\n                message.pop(\"name\", None)\n            elif role\
+          \ == \"tool\":\n                message.setdefault(\"tool_call_id\", last_tool_call_id\
+          \ or f\"call_{row_index}\")\n\n            call = _message_tool_call(message)\n\
+          \            if call is not None and not str(call.get(\"name\", \"\")).strip():\n\
+          \                raise ValueError(\"assistant tool-call function name must\
+          \ be non-empty\")\n            normalized.append(message)\n        return\
+          \ normalized\n\n    def _first_user_content(messages):\n        for message\
+          \ in messages:\n            if isinstance(message, dict) and message.get(\"\
+          role\") == \"user\":\n                content = message.get(\"content\"\
+          , \"\")\n                if isinstance(content, str):\n                \
+          \    return content\n        return \"\"\n\n    def _system_content(messages):\n\
+          \        for message in messages:\n            if isinstance(message, dict)\
+          \ and message.get(\"role\") == \"system\":\n                content = message.get(\"\
+          content\", \"\")\n                return content if isinstance(content,\
+          \ str) else \"\"\n        return \"\"\n\n    def _tool_call_count(messages):\n\
+          \        return sum(1 for message in messages if _message_tool_call(message)\
+          \ is not None)\n\n    def _canonicalize_row(row, row_index):\n        if\
+          \ not isinstance(row, dict):\n            raise ValueError(\"row must be\
+          \ an object\")\n\n        messages = row.get(\"messages\")\n        if messages\
+          \ is not None:\n            normalized_messages = _normalise_messages(messages,\
+          \ row_index)\n            tools = row.get(\"tools\", row.get(\"available_tools\"\
+          , []))\n            tools = _normalise_tools(tools)\n            tool_call_count\
+          \ = _tool_call_count(normalized_messages)\n            if tool_call_count\
+          \ > 1:\n                # Preserve multi-turn traces. Training Hub will\
+          \ decompose each\n                # assistant tool-call turn into a canonical\
+          \ training sample.\n                return {\n                    \"id\"\
+          : row.get(\"id\", row.get(\"uuid\", str(row_index))),\n                \
+          \    \"messages\": normalized_messages,\n                    \"tools\":\
+          \ tools,\n                }\n\n            if tool_call_count == 0:\n  \
+          \              raise ValueError(\"messages contain no assistant tool call\"\
+          )\n            call = next(_message_tool_call(message) for message in normalized_messages\
+          \ if _message_tool_call(message))\n            target_name = str(call[\"\
+          name\"]).strip()\n            target_arguments = _parse_json_value(call.get(\"\
+          arguments\", \"{}\"), \"tool-call arguments\")\n            return {\n \
+          \               \"id\": row.get(\"id\", row.get(\"uuid\", str(row_index))),\n\
+          \                \"question\": row.get(\"question\") or _first_user_content(normalized_messages),\n\
+          \                \"tools\": tools,\n                \"target_tool_name\"\
+          : target_name,\n                \"target_arguments\": target_arguments,\n\
+          \                \"system_prompt\": row.get(\"system_prompt\") or _system_content(normalized_messages),\n\
+          \            }\n\n        tools = row.get(\"tools\", row.get(\"available_tools\"\
+          ))\n        target_name = row.get(\"target_tool_name\", row.get(\"tool_name\"\
+          ))\n        target_arguments = row.get(\"target_arguments\", row.get(\"\
+          arguments\", {}))\n        if tools is None or target_name is None:\n  \
+          \          raise ValueError(\"row is missing tool-call fields\")\n     \
+          \   target_name = str(target_name).strip()\n        if not target_name:\n\
+          \            raise ValueError(\"target_tool_name must be a non-empty string\"\
+          )\n        return {\n            \"id\": row.get(\"id\", row.get(\"uuid\"\
+          , str(row_index))),\n            \"question\": row.get(\"question\", \"\"\
+          ),\n            \"tools\": _normalise_tools(tools),\n            \"target_tool_name\"\
+          : target_name,\n            \"target_arguments\": _parse_json_value(target_arguments,\
+          \ \"target_arguments\"),\n            \"system_prompt\": row.get(\"system_prompt\"\
+          , \"\"),\n        }\n\n    def _is_huggingface_reference(uri):\n       \
+          \ parsed = urllib.parse.urlparse(uri)\n        if uri.startswith(\"hf://\"\
+          ):\n            return True\n        if parsed.scheme:\n            return\
+          \ False\n        return not uri.lower().endswith((\".json\", \".jsonl\"\
+          )) and not uri.startswith((\"/\", \"./\", \"../\"))\n\n    def _normalise_huggingface_reference(uri,\
+          \ config):\n        reference = uri.removeprefix(\"hf://\")\n        if\
+          \ \":\" in reference:\n            reference, inline_config = reference.split(\"\
+          :\", 1)\n            config = inline_config or config\n        if not reference\
+          \ or reference.startswith((\"/\", \".\")):\n            raise ValueError(\"\
+          invalid Hugging Face dataset reference\")\n        return reference, config\n\
+          \n    if not dataset_uri or not dataset_uri.strip():\n        raise ValueError(\"\
+          dataset_uri must not be empty\")\n    if not pvc_mount_path or not pvc_mount_path.strip():\n\
+          \        raise ValueError(\"pvc_mount_path must not be empty\")\n\n    dataset_uri\
+          \ = dataset_uri.strip()\n    if _is_huggingface_reference(dataset_uri):\n\
+          \        reference, resolved_config = _normalise_huggingface_reference(dataset_uri,\
+          \ dataset_config.strip())\n        print(f\"Using Training Hub Hugging Face\
+          \ loader for dataset reference '{reference}'\")\n        return reference,\
+          \ resolved_config, True\n\n    pvc_root = Path(pvc_mount_path).resolve()\n\
+          \    cache_root = pvc_root / \".cache\" / \"prepare_grpo_dataset\"\n   \
+          \ cache_root.mkdir(parents=True, exist_ok=True)\n    hf_cache = cache_root\
+          \ / \"huggingface\"\n    tmp_root = cache_root / \"tmp\"\n    for path in\
+          \ (hf_cache, tmp_root):\n        path.mkdir(parents=True, exist_ok=True)\n\
+          \    os.environ[\"HOME\"] = str(cache_root / \"home\")\n    os.environ[\"\
+          HF_HOME\"] = str(hf_cache)\n    os.environ[\"HF_DATASETS_CACHE\"] = str(hf_cache\
+          \ / \"datasets\")\n    os.environ[\"HF_HUB_CACHE\"] = str(hf_cache / \"\
+          hub\")\n    os.environ[\"TMPDIR\"] = str(tmp_root)\n    os.environ[\"TEMP\"\
+          ] = str(tmp_root)\n    os.environ[\"TMP\"] = str(tmp_root)\n    Path(os.environ[\"\
+          HOME\"]).mkdir(parents=True, exist_ok=True)\n\n    parsed = urllib.parse.urlparse(dataset_uri)\n\
+          \    source_uri = dataset_uri\n    if dataset_uri.startswith(\"pvc://\"\
+          ):\n        relative_path = dataset_uri.removeprefix(\"pvc://\").lstrip(\"\
+          /\")\n        source_uri = str(pvc_root / relative_path)\n    elif not parsed.scheme\
+          \ and not os.path.isabs(dataset_uri):\n        source_uri = str(pvc_root\
+          \ / dataset_uri)\n\n    if parsed.scheme in {\"http\", \"https\"}:\n   \
+          \     suffix = Path(urllib.parse.urlparse(dataset_uri).path).suffix.lower()\n\
+          \        if suffix not in {\".json\", \".jsonl\"}:\n            raise ValueError(\"\
+          HTTP(S) dataset URIs must point to a .json or .jsonl resource\")\n     \
+          \   filename = hashlib.sha256(dataset_uri.encode()).hexdigest() + suffix\n\
+          \        downloaded_path = cache_root / \"downloads\" / filename\n     \
+          \   downloaded_path.parent.mkdir(parents=True, exist_ok=True)\n        if\
+          \ not downloaded_path.exists():\n            print(\"Downloading HTTP(S)\
+          \ dataset to the shared PVC\")\n            with urllib.request.urlopen(dataset_uri)\
+          \ as response, downloaded_path.open(\"wb\") as output:\n               \
+          \ shutil.copyfileobj(response, output)\n        source_uri = str(downloaded_path)\n\
+          \n    if not parsed.scheme and not str(source_uri).lower().endswith((\"\
+          .json\", \".jsonl\")):\n        raise ValueError(\"local/PVC dataset paths\
+          \ must end in .json or .jsonl\")\n    if parsed.scheme == \"pvc\" and not\
+          \ Path(source_uri).is_file():\n        raise FileNotFoundError(f\"dataset\
+          \ file not found on PVC: {source_uri}\")\n\n    normalized_name = hashlib.sha256(f\"\
+          {dataset_uri}\\n{dataset_config}\".encode()).hexdigest() + \".jsonl\"\n\
+          \    normalized_path = cache_root / \"normalized\" / normalized_name\n \
+          \   normalized_path.parent.mkdir(parents=True, exist_ok=True)\n    temporary_path\
+          \ = normalized_path.with_suffix(\".tmp\")\n\n    data_files = source_uri\
+          \ if parsed.scheme == \"s3\" else str(source_uri)\n    storage_options =\
+          \ {}\n    if parsed.scheme == \"s3\":\n        access_key = os.environ.get(\"\
+          AWS_ACCESS_KEY_ID\", \"\").strip()\n        secret_key = os.environ.get(\"\
+          AWS_SECRET_ACCESS_KEY\", \"\").strip()\n        if bool(access_key) != bool(secret_key):\n\
+          \            raise ValueError(\"AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY\
+          \ must be set together\")\n        if access_key and secret_key:\n     \
+          \       storage_options.update({\"key\": access_key, \"secret\": secret_key})\n\
+          \        endpoint = os.environ.get(\"AWS_S3_ENDPOINT\", \"\").strip()\n\
+          \        region = os.environ.get(\"AWS_DEFAULT_REGION\", \"\").strip()\n\
+          \        client_kwargs = {}\n        if endpoint:\n            client_kwargs[\"\
+          endpoint_url\"] = endpoint\n        if region:\n            client_kwargs[\"\
+          region_name\"] = region\n        if client_kwargs:\n            storage_options[\"\
+          client_kwargs\"] = client_kwargs\n    print(\"Loading non-Hugging Face dataset\
+          \ for GRPO normalization\")\n    dataset = load_dataset(\n        \"json\"\
+          ,\n        data_files=data_files,\n        split=\"train\",\n        streaming=True,\n\
+          \        cache_dir=str(hf_cache / \"datasets\"),\n        **({\"storage_options\"\
+          : storage_options} if parsed.scheme == \"s3\" else {}),\n    )\n\n    written\
+          \ = 0\n    skipped = 0\n    first_errors = []\n    with temporary_path.open(\"\
+          w\", encoding=\"utf-8\") as output:\n        for row_index, row in enumerate(dataset):\n\
+          \            try:\n                normalized_row = _canonicalize_row(row,\
+          \ row_index)\n            except (TypeError, ValueError, KeyError, json.JSONDecodeError)\
+          \ as exc:\n                skipped += 1\n                if len(first_errors)\
+          \ < 5:\n                    first_errors.append(f\"row {row_index}: {exc}\"\
+          )\n                continue\n            output.write(json.dumps(normalized_row,\
+          \ ensure_ascii=False) + \"\\n\")\n            written += 1\n    if written\
+          \ == 0:\n        temporary_path.unlink(missing_ok=True)\n        details\
+          \ = \"; \".join(first_errors) or \"no readable rows\"\n        raise ValueError(f\"\
+          no valid GRPO tool-call rows were found ({details})\")\n    os.replace(temporary_path,\
+          \ normalized_path)\n    print(f\"Normalized {written} rows to the shared\
+          \ PVC; skipped {skipped} invalid rows\")\n    if first_errors:\n       \
+          \ print(\"First skipped-row reasons: \" + \"; \".join(first_errors))\n \
+          \   return str(normalized_path), \"\", False\n\n"
+        image: quay.io/opendatahub/odh-th06-cpu-torch291-py312:odh-3.4
+pipelineInfo:
+  name: prepare-grpo-dataset
+root:
+  dag:
+    outputs:
+      parameters:
+        resolved_data_config:
+          valueFromParameter:
+            outputParameterKey: resolved_data_config
+            producerSubtask: prepare-grpo-dataset
+        resolved_data_path:
+          valueFromParameter:
+            outputParameterKey: resolved_data_path
+            producerSubtask: prepare-grpo-dataset
+        use_hf_direct:
+          valueFromParameter:
+            outputParameterKey: use_hf_direct
+            producerSubtask: prepare-grpo-dataset
+    tasks:
+      prepare-grpo-dataset:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-prepare-grpo-dataset
+        inputs:
+          parameters:
+            dataset_config:
+              componentInputParameter: dataset_config
+            dataset_uri:
+              componentInputParameter: dataset_uri
+            pvc_mount_path:
+              componentInputParameter: pvc_mount_path
+        taskInfo:
+          name: prepare-grpo-dataset
+  inputDefinitions:
+    parameters:
+      dataset_config:
+        defaultValue: ''
+        description: 'Optional Hugging Face dataset configuration. An inline
+
+          ``:config`` suffix on an HF URI takes precedence.'
+        isOptional: true
+        parameterType: STRING
+      dataset_uri:
+        description: 'Hugging Face URI/repository ID, ``s3://`` object,
+
+          ``http://`` or ``https://`` JSON/JSONL URL, ``pvc://`` path, or
+
+          local JSON/JSONL path visible in the component container.'
+        parameterType: STRING
+      pvc_mount_path:
+        description: 'Mount point of the shared PVC used for caches and
+
+          normalized local data.'
+        parameterType: STRING
+  outputDefinitions:
+    parameters:
+      resolved_data_config:
+        parameterType: STRING
+      resolved_data_path:
+        parameterType: STRING
+      use_hf_direct:
+        parameterType: BOOLEAN
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
