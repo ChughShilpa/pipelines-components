@@ -88,11 +88,7 @@ def kubeflow_model_registry(
             if not model_uri:
                 model_uri = f"pvc://{pvc_mount_path}/final_model"
     else:
-        model_uri = (
-            f"pvc://{model_pvc_name}/final_model"
-            if model_pvc_name
-            else f"pvc://{pvc_mount_path}/final_model"
-        )
+        model_uri = f"pvc://{model_pvc_name}/final_model" if model_pvc_name else f"pvc://{pvc_mount_path}/final_model"
 
     print(f"\n  Model Name: {resolved_model_name}")
     if base_model_name:

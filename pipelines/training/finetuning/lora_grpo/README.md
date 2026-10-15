@@ -156,7 +156,13 @@ oc auth can-i get service/${REGISTRY_NAME} \
   -n "$REGISTRY_NAMESPACE"
 ```
 
-The result must be ``yes``. Pass the selected registry Service host or IP in ``phase_04_registry_man_address`` and set ``phase_04_registry_opt_port`` to its configured port. Do not paste the dashboard URL path ``/api/model_registry/v1alpha3``. Use a unique model name and version for each registration, then set ``phase_05_deploy_man_namespace`` to the namespace containing the user PVC.
+The result must be ``yes``. Pass the selected registry Service host or IP in
+``phase_04_registry_man_address`` and set ``phase_04_registry_opt_port`` to its
+configured port.
+
+Do not paste the dashboard URL path ``/api/model_registry/v1alpha3``. Use a
+unique model name and version for each registration, then set
+``phase_05_deploy_man_namespace`` to the namespace containing the user PVC.
 
 <!-- custom-content -->
 
