@@ -113,9 +113,6 @@ def _make_ai4rag_mocks() -> SimpleNamespace:
     foundation_model_module = mock.MagicMock()
     foundation_model_module.OpenAIFoundationModel = mock.MagicMock(name="OpenAIFoundationModel")
 
-    simple_rag_module = mock.MagicMock()
-    simple_rag_module.SimpleRAG = mock.MagicMock(name="SimpleRAG")
-
     vector_store_module = mock.MagicMock()
     vector_store_module.get_vector_store_config = get_vector_store_config
 
@@ -170,7 +167,6 @@ def _make_ai4rag_mocks() -> SimpleNamespace:
         "ai4rag.rag.foundation_models": mock.MagicMock(),
         "ai4rag.rag.foundation_models.openai_model": foundation_model_module,
         "ai4rag.rag.template": mock.MagicMock(),
-        "ai4rag.rag.template.simple_rag_template": simple_rag_module,
         "ai4rag.rag.vector_store": vector_store_module,
         "ai4rag.search_space": mock.MagicMock(),
         "ai4rag.search_space.prepare": mock.MagicMock(),
@@ -200,6 +196,7 @@ def _make_ai4rag_mocks() -> SimpleNamespace:
         generate_starter_kit=assets_generator_module.generate_starter_kit,
         create_maas_client=create_maas_client,
         KFPEventHandler=event_handler_cls,
+        AI4RAGSearchSpace=search_space_cls,
         pandas=pandas_mock,
     )
 
@@ -214,6 +211,7 @@ def _pattern_payload(name: str, optimization_score: float | None = None) -> dict
     """Build a pattern payload with the ai4rag ``settings`` shape used for artifact generation."""
     payload = {
         "name": name,
+        "template_id": "agentic_rag",
         "settings": {
             "store_binding": {"provider_type": "milvus", "collection_name": f"{name}-collection"},
             "embedding": {"model_id": "em-0", "embedding_params": {}},
@@ -500,8 +498,9 @@ class TestRagTemplatesOptimizationMetricResolution:
 class TestRagTemplatesOptimizationRun:
     """End-to-end orchestration: evaluator wiring, artifact generation, leaderboard."""
 
+    @pytest.mark.parametrize("template_id", ["agentic_rag", "sequential_rag"])
     @mock.patch.dict("os.environ", MOCKED_ENV_VARIABLES, clear=True)
-    def test_full_run_speed_wires_unitxt_and_writes_patterns(self, tmp_path):
+    def test_full_run_speed_wires_unitxt_and_writes_patterns(self, tmp_path, template_id):
         """The speed preset runs Unitxt only and persists pattern artifacts."""
         mocks = _make_ai4rag_mocks()
         mocks.get_vector_store_config.return_value = mock.MagicMock(name="vector_store_config")
@@ -517,6 +516,8 @@ class TestRagTemplatesOptimizationRun:
                 "evaluation_results": [{"metric": "faithfulness", "score": 0.95}],
             },
         ]
+        for pattern in mocks.KFPEventHandler.return_value.patterns:
+            pattern["payload"]["template_id"] = template_id
         rag_patterns, leaderboard_html = _artifacts(tmp_path)
         starter_kit = mock.MagicMock()
         starter_kit.path = str(tmp_path / "starter_kit" / "starter_kit.zip")
@@ -544,6 +545,7 @@ class TestRagTemplatesOptimizationRun:
             api_key="test-api-key",
         )
         mocks.get_vector_store_config.assert_called_once_with("milvus")
+        assert mocks.AI4RAGSearchSpace.call_args.kwargs["vector_store_type"] == "milvus"
 
         mocks.UnitxtEvaluator.assert_called_once_with()
         mocks.RagasEvaluator.assert_not_called()
@@ -564,6 +566,7 @@ class TestRagTemplatesOptimizationRun:
         mocks.generate_starter_kit.assert_called_once()
         selected_pattern, generated_dir = mocks.generate_starter_kit.call_args.args
         assert selected_pattern["name"] == "pattern_b"
+        assert selected_pattern["template_id"] == template_id
         assert generated_dir != str(rag_patterns.path)
         assert Path(starter_kit.path).read_bytes() == b"generated zip"
         assert starter_kit.uri == "gs://bucket/starter_kit/starter_kit.zip"
@@ -581,10 +584,13 @@ class TestRagTemplatesOptimizationRun:
             "temperature": 0.2,
             "max_completion_tokens": 2048,
         }
-        assert pattern_json["template_id"] == "agentic_rag"
+        assert pattern_json["template_id"] == template_id
         assert "graph_extraction_config" not in pattern_json["indexing"]["pipeline_spec"]["parameters"]
         indexing_notebook_call = next(
             call for call in mocks.generate_notebook_from_template.call_args_list if call.args[0] == "maas_indexing"
+        )
+        assert all(
+            call.args[1]["template_id"] == template_id for call in mocks.generate_notebook_from_template.call_args_list
         )
         assert indexing_notebook_call.kwargs["input_data_keys"] == ["data/docs/", "data/manuals/"]
         assert indexing_notebook_call.kwargs["test_data_key"] == "data/test.json"
@@ -660,6 +666,7 @@ class TestRagTemplatesOptimizationRun:
             )
 
         mocks.get_vector_store_config.assert_called_once_with("pgvector")
+        assert mocks.AI4RAGSearchSpace.call_args.kwargs["vector_store_type"] == "pgvector"
 
     @mock.patch.dict(
         "os.environ",
@@ -677,6 +684,7 @@ class TestRagTemplatesOptimizationRun:
         mocks.create_maas_client.return_value = mock.MagicMock()
         search_space_path = _write_search_space_report(tmp_path)
         neo4j_pattern = _pattern_payload("pattern_a")
+        neo4j_pattern["template_id"] = "agentic_graph_rag"
         neo4j_pattern["settings"]["store_binding"]["provider_type"] = "neo4j"
         neo4j_pattern["settings"]["graph_extraction"] = {"mode": "constrained"}
         mocks.KFPEventHandler.return_value.patterns = [
@@ -699,6 +707,7 @@ class TestRagTemplatesOptimizationRun:
             )
 
         mocks.get_vector_store_config.assert_called_once_with("neo4j")
+        assert mocks.AI4RAGSearchSpace.call_args.kwargs["vector_store_type"] == "neo4j"
         assert [call.args[0] for call in mocks.generate_notebook_from_template.call_args_list] == [
             "mass_creating_knowledge_graph",
             "mass_inference_knowledge_graph",
