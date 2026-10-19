@@ -586,22 +586,62 @@ class TestTimeseriesDataLoaderUnitTests:
                     sampled_test_dataset=sampled_test,
                 )
 
-    @mock.patch.dict(os.environ, mocked_env_variables, clear=True)
-    def test_ssl_error_retries_with_verify_false(self, tmp_path):
-        """SSLError on get_object triggers a retry with verify=False."""
-        csv_content = _timeseries_csv()
-        call_count = 0
+    @pytest.mark.parametrize(
+        ("ssl_cert_path", "aws_ca_bundle", "expected_verify"),
+        [
+            ("", "", True),
+            ("", "/env/ca-bundle.pem", "/env/ca-bundle.pem"),
+            ("/component/ca-bundle.crt", "/env/ca-bundle.pem", "/component/ca-bundle.crt"),
+        ],
+    )
+    def test_ssl_error_fails_closed_with_actionable_error(
+        self, tmp_path, monkeypatch, ssl_cert_path, aws_ca_bundle, expected_verify
+    ):
+        """SSLError on get_object fails closed with an actionable error instead of an unverified retry."""
+        for key, value in {**mocked_env_variables, "AWS_CA_BUNDLE": aws_ca_bundle}.items():
+            monkeypatch.setenv(key, value)
 
         def get_object_side_effect(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise _MockSSLError("SSL validation failed")
-            return {"Body": io.BytesIO(csv_content.encode("utf-8"))}
+            raise _MockSSLError("SSL validation failed")
 
         sampled_test = _make_test_artifact(tmp_path)
 
         with _mock_boto3_and_pandas(get_object_side_effect=get_object_side_effect) as mock_s3:
+            import boto3 as mocked_boto3
+
+            component_kwargs = {"ssl_cert_path": ssl_cert_path} if ssl_cert_path else {}
+            with pytest.raises(RuntimeError, match="S3 TLS certificate validation failed") as exc_info:
+                timeseries_data_loader.python_func(
+                    file_key="timeseries/train.csv",
+                    bucket_name="my-bucket",
+                    workspace_path=str(tmp_path),
+                    target="target",
+                    id_column="item_id",
+                    timestamp_column="timestamp",
+                    sampled_test_dataset=sampled_test,
+                    **component_kwargs,
+                )
+
+            message = str(exc_info.value)
+            assert "Do not disable certificate verification" in message
+            expected_source = expected_verify if isinstance(expected_verify, str) else "the system trust bundle"
+            assert f"ssl_cert_path='{expected_source}'" in message
+            assert "s3://my-bucket/timeseries/train.csv" in message
+            assert isinstance(exc_info.value.__cause__, _MockSSLError)
+
+            # No unverified retry: the object is requested once, with one verified client.
+            mock_s3.get_object.assert_called_once()
+            client_calls = mocked_boto3.client.call_args_list
+            assert len(client_calls) == 1
+            assert client_calls[0][1]["verify"] == expected_verify
+
+    @mock.patch.dict(os.environ, {**mocked_env_variables, "AWS_CA_BUNDLE": "/etc/pki/tls/custom-ca.crt"}, clear=True)
+    def test_aws_ca_bundle_selects_s3_verification_bundle(self, tmp_path):
+        """AWS_CA_BUNDLE is passed to the S3 client so verification uses the configured bundle."""
+        csv_content = _timeseries_csv()
+        sampled_test = _make_test_artifact(tmp_path)
+
+        with _mock_boto3_and_pandas(get_object_return={"Body": io.BytesIO(csv_content.encode("utf-8"))}) as mock_s3:
             import boto3 as mocked_boto3
 
             result = timeseries_data_loader.python_func(
@@ -614,13 +654,11 @@ class TestTimeseriesDataLoaderUnitTests:
                 sampled_test_dataset=sampled_test,
             )
 
-        assert result.sample_config["total_rows_loaded"] == MIN_VALID_RECORDS
-        assert mock_s3.get_object.call_count == 2
-
-        client_calls = mocked_boto3.client.call_args_list
-        assert len(client_calls) == 2
-        assert client_calls[0][1].get("verify", True) is True
-        assert client_calls[1][1]["verify"] is False
+            assert result.sample_config["total_rows_loaded"] == MIN_VALID_RECORDS
+            mock_s3.get_object.assert_called_once_with(Bucket="my-bucket", Key="timeseries/train.csv")
+            client_calls = mocked_boto3.client.call_args_list
+            assert len(client_calls) == 1
+            assert client_calls[0][1]["verify"] == "/etc/pki/tls/custom-ca.crt"
 
     @mock.patch.dict(os.environ, mocked_env_variables, clear=True)
     def test_duplicate_id_timestamp_keep_last(self, tmp_path):
