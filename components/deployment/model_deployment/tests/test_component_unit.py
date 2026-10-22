@@ -117,6 +117,18 @@ def test_component_signature():
     assert spec.inputs["tokenizer_mode"].default == "auto"
 
 
+@pytest.mark.parametrize(
+    "model_run_id",
+    ["../other-model", "run/nested", r"run\nested", ".", "..", "run?query"],
+)
+def test_rejects_unsafe_model_run_id(model_run_id):
+    """Run IDs cannot change the PVC path structure."""
+    kwargs = {**_DEFAULT_KWARGS, "model_run_id": model_run_id}
+
+    with pytest.raises(ValueError, match="single path-safe segment"):
+        model_deployment.python_func(**kwargs)
+
+
 def test_vllm_image_is_defined_inside_embedded_component():
     """The embedded executor source must not depend on module globals."""
     command = " ".join(model_deployment.component_spec.implementation.container.command)
@@ -130,10 +142,11 @@ def test_vllm_image_is_defined_inside_embedded_component():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("model_run_id", [".run-123", "_run-123", "-run-123"])
 @mock.patch("time.sleep")
 @mock.patch("kubernetes.config.load_incluster_config")
 @mock.patch("kubernetes.client.CustomObjectsApi")
-def test_creates_serving_runtime_when_not_found(mock_api_cls, mock_config, mock_sleep):
+def test_creates_serving_runtime_when_not_found(mock_api_cls, mock_config, mock_sleep, model_run_id):
     """When the ServingRuntime does not exist, create_namespaced_custom_object is called."""
     mock_api = mock_api_cls.return_value
 
@@ -174,7 +187,7 @@ def test_creates_serving_runtime_when_not_found(mock_api_cls, mock_config, mock_
         **_DEFAULT_KWARGS,
         "genai_use_case": "text-generation",
         "tokenizer_mode": "slow",
-        "model_run_id": "run-123",
+        "model_run_id": model_run_id,
     }
     result = model_deployment.python_func(**kwargs)
 
@@ -190,7 +203,7 @@ def test_creates_serving_runtime_when_not_found(mock_api_cls, mock_config, mock_
     annotations = isvc_creates[0].kwargs["body"]["metadata"]["annotations"]
     assert annotations["opendatahub.io/genai-use-case"] == "text-generation"
     assert isvc_creates[0].kwargs["body"]["spec"]["predictor"]["model"]["storageUri"] == (
-        "pvc://cache-pvc/org--Model-Name/run-123"
+        f"pvc://cache-pvc/org--Model-Name/{model_run_id}"
     )
 
     # Verify patch was NOT called for serving runtimes
