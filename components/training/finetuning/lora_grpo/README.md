@@ -24,6 +24,7 @@ After the TrainJob completes, this component reads the adapter checkpoints from 
 | `training_base_model` | `str` | `Qwen/Qwen3-4B` | Base model (HuggingFace ID or local path). |
 | `training_data_path` | `str` | `""` | Dataset path or HuggingFace ID (e.g., Agent-Ark/Toucan-1.5M). When empty, uses the dataset artifact. When set, overrides the artifact. |
 | `training_num_iterations` | `int` | `5` | Number of GRPO training iterations. |
+| `training_completion_timeout_seconds` | `int` | `1800` | Maximum number of seconds to wait for the TrainJob to reach Complete or Failed after it starts. Defaults to 1800 seconds (30 minutes). |
 | `training_group_size` | `int` | `4` | Number of rollouts per prompt for GRPO advantage estimation. |
 | `training_prompt_batch_size` | `int` | `50` | Number of prompts per training batch. |
 | `training_n_train` | `int` | `200` | Number of training samples to use from the dataset. |
