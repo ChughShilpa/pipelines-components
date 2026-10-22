@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 def _pvc_parts(uri: str) -> tuple[str | None, str]:
@@ -99,14 +100,20 @@ def _validate_vllm_configuration(vllm_source: str | None, vllm_endpoint: str | N
 
 
 def _resolve_pip_index_urls(configured_urls: str | None, env: dict[str, str]) -> list[str] | None:
-    """Resolve explicit index URLs or a primary pip index from job environment."""
+    """Resolve pip indexes while rejecting URLs that embed credentials."""
     if configured_urls:
         urls = [url.strip() for url in configured_urls.split(",") if url.strip()]
-        if urls:
-            return urls
+    else:
+        index_url = env.get("PIP_INDEX_URL", "").strip()
+        urls = [index_url] if index_url else []
 
-    index_url = env.get("PIP_INDEX_URL", "").strip()
-    return [index_url] if index_url else None
+    extra_index_urls = env.get("PIP_EXTRA_INDEX_URL", "").split()
+    for url in [*urls, *extra_index_urls]:
+        parsed_url = urlsplit(url)
+        if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+            raise ValueError("Pip index URLs must not embed credentials or query tokens; use Secret-backed auth.")
+
+    return urls or None
 
 
 def run_speculator(mode: str, values: dict[str, Any]) -> str:
@@ -239,7 +246,8 @@ def run_speculator(mode: str, values: dict[str, Any]) -> str:
 
     log.info("Initializing Speculator %s mode", mode)
     api = init_k8s(log)
-    cache_root = os.path.join(pvc_path, ".cache", "huggingface")
+    # KFP's workspace mount is not available in Trainer workers; use writable temp storage.
+    cache_root = "/tmp/.cache/huggingface"
     default_env = {
         "XDG_CACHE_HOME": "/tmp",
         "TRITON_CACHE_DIR": "/tmp/.triton",
