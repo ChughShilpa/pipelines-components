@@ -98,6 +98,17 @@ def _validate_vllm_configuration(vllm_source: str | None, vllm_endpoint: str | N
     return endpoint
 
 
+def _resolve_pip_index_urls(configured_urls: str | None, env: dict[str, str]) -> list[str] | None:
+    """Resolve explicit index URLs or a primary pip index from job environment."""
+    if configured_urls:
+        urls = [url.strip() for url in configured_urls.split(",") if url.strip()]
+        if urls:
+            return urls
+
+    index_url = env.get("PIP_INDEX_URL", "").strip()
+    return [index_url] if index_url else None
+
+
 def run_speculator(mode: str, values: dict[str, Any]) -> str:
     """Run one fixed Speculator mode from a KFP launcher."""
     try:
@@ -311,10 +322,12 @@ def run_speculator(mode: str, values: dict[str, Any]) -> str:
             "metrics_port": values["metrics_port"],
             "metrics_poll_interval_seconds": values["metrics_poll_interval_seconds"],
         }
+        params["env"] = env
         if values.get("packages_to_install"):
             params["packages_to_install"] = [x.strip() for x in values["packages_to_install"].split(",")]
-        if values.get("pip_index_urls"):
-            params["pip_index_urls"] = [x.strip() for x in values["pip_index_urls"].split(",")]
+        pip_index_urls = _resolve_pip_index_urls(values.get("pip_index_urls"), env)
+        if pip_index_urls:
+            params["pip_index_urls"] = pip_index_urls
         if mode == "data_only":
             params["dataset_name"] = values["dataset_name"]
             if values.get("data_extraction_max_samples") is not None:

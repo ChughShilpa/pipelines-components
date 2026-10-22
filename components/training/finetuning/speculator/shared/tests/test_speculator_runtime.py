@@ -20,6 +20,27 @@ class TestSpeculatorRuntime:
         for mode in ("data_only", "train_only", "offline", "online"):
             assert mode in source
 
+    def test_runtime_forwards_job_environment_to_trainer(self):
+        """Trainer jobs receive the environment configured by the component input."""
+        assert 'params["env"] = env' in inspect.getsource(speculator.run_speculator)
+
+    @pytest.mark.parametrize(
+        ("configured_urls", "env", "expected"),
+        [
+            (None, {}, None),
+            ("", {"PIP_INDEX_URL": " https://packages.example.test/simple "}, ["https://packages.example.test/simple"]),
+            (
+                " https://first.example.test/simple, , https://second.example.test/simple ",
+                {"PIP_INDEX_URL": "https://ignored.example.test/simple"},
+                ["https://first.example.test/simple", "https://second.example.test/simple"],
+            ),
+            ("", {"PIP_EXTRA_INDEX_URL": "https://extra.example.test/simple"}, None),
+        ],
+    )
+    def test_pip_index_urls_can_be_configured_through_job_env(self, configured_urls, env, expected):
+        """A primary PIP_INDEX_URL becomes the SDK index; extra indexes stay in env."""
+        assert speculator._resolve_pip_index_urls(configured_urls, env) == expected
+
     def test_runtime_publishes_checkpoint_best(self):
         """Verify Speculator publishes its best checkpoint, not an arbitrary one."""
         assert '"checkpoint_best"' in inspect.getsource(speculator.run_speculator)
