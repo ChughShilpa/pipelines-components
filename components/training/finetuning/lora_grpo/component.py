@@ -58,6 +58,7 @@ def train_model(
     training_base_model: str = "Qwen/Qwen3-4B",
     training_data_path: str = "",
     training_num_iterations: int = 5,
+    training_completion_timeout_seconds: int = 1800,
     training_group_size: int = 4,
     training_prompt_batch_size: int = 50,
     training_n_train: int = 200,
@@ -106,6 +107,9 @@ def train_model(
             Agent-Ark/Toucan-1.5M). When empty, uses the dataset artifact.
             When set, overrides the artifact.
         training_num_iterations: Number of GRPO training iterations.
+        training_completion_timeout_seconds: Maximum number of seconds to wait
+            for the TrainJob to reach Complete or Failed after it starts.
+            Defaults to 1800 seconds (30 minutes).
         training_group_size: Number of rollouts per prompt for GRPO advantage estimation.
         training_prompt_batch_size: Number of prompts per training batch.
         training_n_train: Number of training samples to use from the dataset.
@@ -136,6 +140,7 @@ def train_model(
     """
     import glob
     import os
+    import re
     import uuid
     from typing import Dict
 
@@ -150,6 +155,11 @@ def train_model(
     _api = init_k8s(log)
 
     run_id = training_run_id.strip() or uuid.uuid4().hex
+    if run_id in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
+        raise ValueError(
+            "training_run_id must be a single path-safe segment containing "
+            "only letters, numbers, dots, underscores, and hyphens"
+        )
 
     # Use the existing workspace mount as the root for worker state. This keeps
     # the worker on one PVC mount and avoids image-specific home paths.
@@ -196,21 +206,8 @@ def train_model(
     merged_env = configure_env(training_envs, default_env, log)
     setup_hf_token(merged_env, training_base_model, log)
 
-    grpo_training_completion_timeout_env = "LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS"
-    grpo_default_training_completion_timeout_seconds = 7200
-    try:
-        training_completion_timeout_seconds = int(
-            os.environ.get(
-                grpo_training_completion_timeout_env,
-                str(grpo_default_training_completion_timeout_seconds),
-            )
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"{grpo_training_completion_timeout_env} must be a positive integer number of seconds"
-        ) from exc
     if training_completion_timeout_seconds <= 0:
-        raise ValueError(f"{grpo_training_completion_timeout_env} must be a positive integer number of seconds")
+        raise ValueError("training_completion_timeout_seconds must be a positive integer number of seconds")
     log.info("TrainJob completion wait timeout configured to %s seconds", training_completion_timeout_seconds)
 
     ds_dir = os.path.join(pvc_path, "dataset", "train")
@@ -481,7 +478,17 @@ def train_model(
 
     # persist_model targets the merged model directory directly so that
     # find_model_dir cannot accidentally pick an ART adapter's config.json.
-    persist_model(merged_dir, pvc_path, training_base_model, output_model, log)
+    # Keep each run's serving artifact isolated on a shared PVC. The
+    # deployment and registry stages receive this same subpath through the
+    # output model metadata.
+    persist_model(
+        merged_dir,
+        pvc_path,
+        training_base_model,
+        output_model,
+        log,
+        model_subpath=os.path.join("final_model", run_id),
+    )
 
     if adapter_ckpt_path:
         output_model.metadata["adapter_checkpoint"] = adapter_ckpt_path

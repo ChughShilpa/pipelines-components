@@ -45,6 +45,12 @@ class TestLoraGrpoPipeline:
         """The GRPO-specific timeout does not change the public pipeline interface."""
         assert "phase_02_train_opt_job_timeout_seconds" not in lora_grpo_pipeline.component_spec.inputs
 
+    def test_training_completion_timeout_defaults_to_two_hours(self):
+        """The pipeline allows up to two hours for TrainJob completion by default."""
+        parameter = lora_grpo_pipeline.component_spec.inputs["phase_02_train_opt_completion_timeout_seconds"]
+        assert parameter.default == 7200
+        assert parameter.optional is True
+
     def test_pipeline_compiles(self, tmp_path):
         """Test that the pipeline compiles successfully."""
         output_path = tmp_path / "pipeline.yaml"
@@ -71,7 +77,10 @@ class TestLoraGrpoPipeline:
         assert "componentInputParameter: phase_02_train_opt_data_config" in compiled
         assert "AWS_ACCESS_KEY_ID" in compiled
         assert "secretNameParameter" in compiled
-        assert "LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS" in compiled
+        assert "phase_02_train_opt_completion_timeout_seconds" in compiled
+        assert "LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS" not in compiled
+        assert "model_run_id" in compiled
+        assert "final_model/{{$.pipeline_job_uuid}}" not in compiled
 
     def test_registry_sdk_pin_is_grpo_specific(self, tmp_path):
         """The GRPO artifact pins the registry SDK without changing the shared component."""
