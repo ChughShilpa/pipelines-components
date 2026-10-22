@@ -20,9 +20,14 @@ class TestSpeculatorRuntime:
         for mode in ("data_only", "train_only", "offline", "online"):
             assert mode in source
 
-    def test_runtime_forwards_job_environment_to_trainer(self):
+    def test_runtime_forwards_configured_environment_to_trainer(self):
         """Trainer jobs receive the environment configured by the component input."""
         assert 'params["env"] = env' in inspect.getsource(speculator.run_speculator)
+
+    def test_runtime_keeps_hugging_face_caches_off_the_kfp_workspace(self):
+        """Trainer workers use writable temporary storage for Hugging Face caches."""
+        source = inspect.getsource(speculator.run_speculator)
+        assert 'cache_root = "/tmp/.cache/huggingface"' in source
 
     @pytest.mark.parametrize(
         ("configured_urls", "env", "expected"),
@@ -40,6 +45,22 @@ class TestSpeculatorRuntime:
     def test_pip_index_urls_can_be_configured_through_job_env(self, configured_urls, env, expected):
         """A primary PIP_INDEX_URL becomes the SDK index; extra indexes stay in env."""
         assert speculator._resolve_pip_index_urls(configured_urls, env) == expected
+
+    @pytest.mark.parametrize(
+        ("configured_urls", "env"),
+        [
+            ("https://user:password@packages.example.test/simple", {}),
+            ("https://packages.example.test/simple?token=secret", {}),
+            (
+                "https://packages.example.test/simple",
+                {"PIP_EXTRA_INDEX_URL": "https://user:password@extra.example.test/simple"},
+            ),
+        ],
+    )
+    def test_pip_index_urls_reject_embedded_credentials(self, configured_urls, env):
+        """Reject pip index URLs that contain embedded credentials."""
+        with pytest.raises(ValueError, match="must not embed credentials"):
+            speculator._resolve_pip_index_urls(configured_urls, env)
 
     def test_runtime_publishes_checkpoint_best(self):
         """Verify Speculator publishes its best checkpoint, not an arbitrary one."""
