@@ -10,8 +10,8 @@ _SHARED_DIR = os.path.join(os.path.dirname(__file__), "..", "shared")
 
 @dsl.component(
     base_image=(
-        "quay.io/opendatahub/odh-th-torch-cuda-py312:odh-3.6-ea.1@"
-        "sha256:9ad2d72ebe892dffd3554eeb81e2a47c9fcf0d97f89ed261d48f4e8bbc367b4b"
+        "registry.redhat.io/rhoai/odh-th-torch-cuda-py312-rhel9@"
+        "sha256:edd92fa1b4759ad93ef3e93d221a9817e0582ed9391d56763f9e30e619679e31"
     ),
     packages_to_install=["kfp==2.17.0", "kubernetes", "olot"],
     install_kfp_package=False,
