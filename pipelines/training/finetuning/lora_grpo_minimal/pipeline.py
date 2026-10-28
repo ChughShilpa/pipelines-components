@@ -100,7 +100,7 @@ def lora_grpo_minimal_pipeline(
             the preparation component onto the shared PVC. Non-Hugging Face
             rows are converted to Training Hub's canonical ``messages`` and
             ``tools`` format. See the [Training Hub loader
-            format](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py#L381-L387).
+            format](https://github.com/Red-Hat-AI-Innovation-Team/training_hub/blob/main/src/training_hub/algorithms/lora_grpo.py#L381-L394).
         p03_training_model: (Required) HuggingFace model ID of the base model to
             fine-tune. If the model is gated, configure the ``hf-token`` secret.
             Examples: ``Qwen/Qwen3-4B`` or
@@ -121,9 +121,10 @@ def lora_grpo_minimal_pipeline(
             require the ``mistral_common`` tokenizer. Do not leave it empty.
         p07_dataset_max_invalid_row_ratio: Maximum fraction of invalid
             rows that the preparation component may skip for local, PVC, S3,
-            and HTTP(S) sources before failing. Defaults to 10%; use ``0.0``
-            for strict validation. It is not applied to direct Hugging Face
-            loading.
+            and HTTP(S) sources before failing. Defaults to 10% (``0.10``).
+            Enter a fraction between ``0.0`` and ``1.0``; for example, enter
+            ``0.50`` for 50%. Use ``0.0`` for strict validation. It is not
+            applied to direct Hugging Face loading.
         p08_dataset_data_connection_name: Name of the RHOAI data connection
             Secret used by the preparation task for private S3 input. It
             defaults to ``s3-secret``. It is optional for Hugging Face,
