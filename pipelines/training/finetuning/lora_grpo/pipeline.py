@@ -40,6 +40,16 @@ GRPO_MODEL_REGISTRY = dsl.component(
 # =============================================================================
 
 
+@dsl.component(
+    base_image="quay.io/opendatahub/odh-th-torch-cpu-py312:odh-3.6-ea.2",
+    install_kfp_package=False,
+)
+def validate_replica_settings(min_replicas: int, max_replicas: int) -> None:
+    """Validate serving replica bounds before expensive pipeline stages run."""
+    if min_replicas < 1 or max_replicas < min_replicas:
+        raise ValueError("replica settings must satisfy 1 <= min_replicas <= max_replicas")
+
+
 @dsl.pipeline(
     name=PIPELINE_NAME,
     description=(
@@ -57,6 +67,7 @@ def lora_grpo_pipeline(
     p04_model_registry_address: str,
     p05_serving_namespace: str,
     p06_tokenizer_mode: str,
+    # Optional inputs, ordered by pipeline stage.
     p07_dataset_max_invalid_row_ratio: float = 0.10,
     p08_dataset_data_connection_name: str = "s3-secret",
     p09_training_num_iterations: int = 50,
@@ -216,8 +227,8 @@ def lora_grpo_pipeline(
             4096 is adequate for tool-call traces. Increase to 8192 for longer
             prompts.
         p25_serving_max_replicas: Maximum predictor replicas for autoscaling.
-            Set equal to ``p39_serving_min_replicas`` to disable scaling.
-            Example: ``1``
+            Must be greater than or equal to ``p39_serving_min_replicas``.
+            Set equal to it to disable scaling. Example: ``1``
         p26_serving_cpu_requests: CPU cores requested and limited for the KServe
             predictor pod. Example: ``2``
         p27_serving_memory_requests: RAM requested and limited for the KServe
@@ -252,8 +263,9 @@ def lora_grpo_pipeline(
             registry. Use ``pytorch`` for vLLM-served models. Example: ``pytorch``
         p38_model_registry_format_version: Version of the model format. Use
             ``1.0`` for PyTorch. Example: ``1.0``
-        p39_serving_min_replicas: Minimum live KServe predictor replicas. Set to
-            1 to keep the endpoint always warm. Example: ``1``
+        p39_serving_min_replicas: Minimum live KServe predictor replicas. Must
+            be at least 1 and no greater than ``p25_serving_max_replicas``. Set
+            to 1 to keep the endpoint always warm. Example: ``1``
     """
 
     def configure_training_task(training_task):
@@ -288,6 +300,12 @@ def lora_grpo_pipeline(
         )
         return training_task
 
+    validate_replicas_task = validate_replica_settings(
+        min_replicas=p39_serving_min_replicas,
+        max_replicas=p25_serving_max_replicas,
+    )
+    validate_replicas_task.set_caching_options(False)
+
     # =====================================================================
     # Stage 1: LoRA GRPO Training
     # =====================================================================
@@ -297,6 +315,7 @@ def lora_grpo_pipeline(
         dataset_config=p28_training_data_config,
         max_invalid_row_ratio=p07_dataset_max_invalid_row_ratio,
     )
+    prepare_dataset_task.after(validate_replicas_task)
     prepare_dataset_task.set_caching_options(False)
     kfp.kubernetes.set_image_pull_policy(prepare_dataset_task, "IfNotPresent")
     kfp.kubernetes.mount_pvc(

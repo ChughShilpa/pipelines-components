@@ -27,6 +27,16 @@ GRPO_MODEL_REGISTRY = dsl.component(
 )(shared_model_registry.python_func)
 
 
+@dsl.component(
+    base_image="quay.io/opendatahub/odh-th-torch-cpu-py312:odh-3.6-ea.2",
+    install_kfp_package=False,
+)
+def validate_replica_settings(min_replicas: int, max_replicas: int) -> None:
+    """Validate serving replica bounds before expensive pipeline stages run."""
+    if min_replicas < 1 or max_replicas < min_replicas:
+        raise ValueError("replica settings must satisfy 1 <= min_replicas <= max_replicas")
+
+
 @dsl.pipeline(
     name=PIPELINE_NAME,
     description=(
@@ -189,7 +199,7 @@ def lora_grpo_minimal_pipeline(
             VRAM. Default 4096 is adequate for tool-call traces. Increase to
             8192 for longer prompts.
         p25_serving_max_replicas: Maximum predictor replicas for
-            autoscaling. Set equal to ``min_replicas`` to disable scaling.
+            autoscaling. Must be at least 1. Set to 1 to disable scaling.
             Example: ``1``
         p26_serving_cpu_requests: CPU cores requested and limited for
             the KServe predictor pod. Example: ``2``
@@ -230,11 +240,15 @@ def lora_grpo_minimal_pipeline(
         return training_task
 
     # Stage 1: Dataset preparation.
+    validate_replicas_task = validate_replica_settings(min_replicas=1, max_replicas=p25_serving_max_replicas)
+    validate_replicas_task.set_caching_options(False)
+
     prepare_dataset_task = prepare_grpo_dataset(
         dataset_uri=p02_dataset_uri,
         pvc_mount_path=PVC_MOUNT_PATH,
         max_invalid_row_ratio=p07_dataset_max_invalid_row_ratio,
     )
+    prepare_dataset_task.after(validate_replicas_task)
     prepare_dataset_task.set_caching_options(False)
     kfp.kubernetes.set_image_pull_policy(prepare_dataset_task, "IfNotPresent")
     kfp.kubernetes.mount_pvc(

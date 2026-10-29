@@ -42,7 +42,7 @@ Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
 | `p22_model_registry_port` | `int` | `8080` | Port of the Model Registry service. Default 8080 matches a typical internal HTTP registry. |
 | `p23_serving_gpu_count` | `int` | `1` | GPUs allocated to the KServe vLLM predictor pod. 1 GPU is sufficient for Qwen3-4B. Example: ``1`` |
 | `p24_serving_max_model_len` | `int` | `4096` | Maximum total token length (prompt + completion) vLLM will handle. Longer contexts use more VRAM. Default 4096 is adequate for tool-call traces. Increase to 8192 for longer prompts. |
-| `p25_serving_max_replicas` | `int` | `1` | Maximum predictor replicas for autoscaling. Set equal to ``p39_serving_min_replicas`` to disable scaling. Example: ``1`` |
+| `p25_serving_max_replicas` | `int` | `1` | Maximum predictor replicas for autoscaling. Must be greater than or equal to ``p39_serving_min_replicas``. Set equal to it to disable scaling. Example: ``1`` |
 | `p26_serving_cpu_requests` | `str` | `2` | CPU cores requested and limited for the KServe predictor pod. Example: ``2`` |
 | `p27_serving_memory_requests` | `str` | `8Gi` | RAM requested and limited for the KServe predictor pod. Example: ``8Gi`` |
 | `p28_training_data_config` | `str` | `""` | Optional Hugging Face dataset configuration name. Set it when a multi-configuration dataset does not include the configuration in its URI, for example ``Qwen3`` with ``hf://Agent-Ark/Toucan-1.5M``. Leave it empty when the URI already includes ``:config``, when the dataset has one configuration, or for local/PVC, S3, and HTTP(S) sources. Split selection is not supported; do not use this parameter to specify a split name. |
@@ -56,7 +56,7 @@ Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
 | `p36_model_registry_description` | `str` | `""` | Free-text description stored with the registered model. Example: ``Qwen3-4B fine-tuned with GRPO for tool-calling tasks`` |
 | `p37_model_registry_format_name` | `str` | `pytorch` | Model serialization format in the registry. Use ``pytorch`` for vLLM-served models. Example: ``pytorch`` |
 | `p38_model_registry_format_version` | `str` | `1.0` | Version of the model format. Use ``1.0`` for PyTorch. Example: ``1.0`` |
-| `p39_serving_min_replicas` | `int` | `1` | Minimum live KServe predictor replicas. Set to 1 to keep the endpoint always warm. Example: ``1`` |
+| `p39_serving_min_replicas` | `int` | `1` | Minimum live KServe predictor replicas. Must be at least 1 and no greater than ``p25_serving_max_replicas``. Set to 1 to keep the endpoint always warm. Example: ``1`` |
 
 ## Metadata 🗂️
 
@@ -84,7 +84,7 @@ Pipeline ServiceAccount RBAC for KServe CRDs (required for stage 5).
   - tool_calling
   - llm
   - pipeline
-- **Last Verified**: 2026-10-27 00:00:00+00:00
+- **Last Verified**: 2026-10-28 00:00:00+00:00
 - **Owners**:
   - No Parent Owners: Yes
   - Approvers:

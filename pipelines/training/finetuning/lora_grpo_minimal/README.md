@@ -41,7 +41,7 @@ The following implementation details are intentionally fixed for the minimal var
 | `p22_model_registry_port` | `int` | `8080` | Port of the Model Registry service. Default 8080 matches a typical internal HTTP registry. |
 | `p23_serving_gpu_count` | `int` | `1` | GPUs allocated to the KServe vLLM predictor pod. 1 GPU is sufficient for Qwen3-4B. Example: ``1`` |
 | `p24_serving_max_model_len` | `int` | `4096` | Maximum total token length (prompt + completion) vLLM will handle. Longer contexts use more VRAM. Default 4096 is adequate for tool-call traces. Increase to 8192 for longer prompts. |
-| `p25_serving_max_replicas` | `int` | `1` | Maximum predictor replicas for autoscaling. Set equal to ``min_replicas`` to disable scaling. Example: ``1`` |
+| `p25_serving_max_replicas` | `int` | `1` | Maximum predictor replicas for autoscaling. Must be at least 1. Set to 1 to disable scaling. Example: ``1`` |
 | `p26_serving_cpu_requests` | `str` | `2` | CPU cores requested and limited for the KServe predictor pod. Example: ``2`` |
 | `p27_serving_memory_requests` | `str` | `8Gi` | RAM requested and limited for the KServe predictor pod. Example: ``8Gi`` |
 
@@ -72,7 +72,7 @@ The following implementation details are intentionally fixed for the minimal var
   - llm
   - pipeline
   - minimal
-- **Last Verified**: 2026-10-23 00:00:00+00:00
+- **Last Verified**: 2026-10-28 00:00:00+00:00
 - **Owners**:
   - No Parent Owners: Yes
   - Approvers:

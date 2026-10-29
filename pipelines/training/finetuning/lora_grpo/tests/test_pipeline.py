@@ -1,8 +1,9 @@
 """Tests for LoRA GRPO pipeline."""
 
+import pytest
 from kfp import compiler
 
-from ..pipeline import lora_grpo_pipeline
+from ..pipeline import lora_grpo_pipeline, validate_replica_settings
 
 
 class TestLoraGrpoPipeline:
@@ -11,6 +12,16 @@ class TestLoraGrpoPipeline:
     def test_pipeline_function_exists(self):
         """Test that the pipeline function is properly defined."""
         assert callable(lora_grpo_pipeline)
+
+    @pytest.mark.parametrize("min_replicas,max_replicas", [(0, 1), (2, 1)])
+    def test_replica_validation_rejects_invalid_bounds(self, min_replicas, max_replicas):
+        """Serving replicas must satisfy the KServe min/max relationship."""
+        validate_replica_settings.python_func(min_replicas=1, max_replicas=1)
+        with pytest.raises(ValueError, match="1 <= min_replicas <= max_replicas"):
+            validate_replica_settings.python_func(
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+            )
 
     def test_tokenizer_mode_is_required(self):
         """Deployment tokenizer mode must be selected for the target model."""
@@ -82,6 +93,7 @@ class TestLoraGrpoPipeline:
         assert "LORA_GRPO_TRAINING_COMPLETION_TIMEOUT_SECONDS" not in compiled
         assert "model_run_id" in compiled
         assert "final_model/{{$.pipeline_job_uuid}}" not in compiled
+        assert "- validate-replica-settings" in compiled
 
     def test_registry_sdk_pin_is_grpo_specific(self, tmp_path):
         """The GRPO artifact pins the registry SDK without changing the shared component."""
